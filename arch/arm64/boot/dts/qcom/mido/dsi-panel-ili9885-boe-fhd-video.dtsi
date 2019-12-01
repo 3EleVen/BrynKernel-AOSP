@@ -34,6 +34,9 @@
 		qcom,mdss-dsi-bpp = <24>;
 		qcom,mdss-dsi-underflow-color = <0xff>;
 		qcom,mdss-dsi-border-color = <0>;
+		qcom,ulps-enabled;
+		qcom,suspend-ulps-enabled;
+		qcom,panel-allow-phy-poweroff;
 		qcom,mdss-dsi-on-command = [29 01 00 00 00 00 02 35 00
 				29 01 00 00 00 00 03 51 0F ff
 				29 01 00 00 00 00 02 53 2c
