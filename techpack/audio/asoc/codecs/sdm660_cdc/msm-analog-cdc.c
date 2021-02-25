@@ -1,5 +1,4 @@
-/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -48,15 +47,6 @@
 #define MAX_ON_DEMAND_SUPPLY_NAME_LENGTH	64
 #define BUS_DOWN 1
 
-/*********Added by Quanyu.Lee*********/
-/****************Begin****************/
-/*******for the PA working mode*******/
-
-#define K8_MODE_NUM 2
-
-/*****************End*****************/
-/*********Added by Quanyu.Lee*********/
-
 /*
  * 200 Milliseconds sufficient for DSP bring up in the lpass
  * after Sub System Restart
@@ -68,7 +58,7 @@
 #define SPK_PMD 2
 #define SPK_PMU 3
 
-#define MICBIAS_DEFAULT_VAL 2700000
+#define MICBIAS_DEFAULT_VAL 1800000
 #define MICBIAS_MIN_VAL 1600000
 #define MICBIAS_STEP_SIZE 50000
 
@@ -2862,12 +2852,9 @@ static int msm_anlg_cdc_lo_dac_event(struct snd_soc_dapm_widget *w,
 			MSM89XX_PMIC_ANALOG_RX_LO_DAC_CTL, 0x08, 0x08);
 		snd_soc_update_bits(codec,
 			MSM89XX_PMIC_ANALOG_RX_LO_DAC_CTL, 0x40, 0x40);
-/*********Added by Quanyu.Lee*********/
-/****************Begin****************/
-/*****for the line out gain issue*****/
-        msleep(5);
-/*****************End*****************/
-/*********Added by Quanyu.Lee*********/
+#ifdef CONFIG_MACH_XIAOMI_C6
+		msleep(5);
+#endif
 		break;
 	case SND_SOC_DAPM_POST_PMU:
 		snd_soc_update_bits(codec,
@@ -3071,6 +3058,9 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"LINEOUT PA", NULL, "LINE_OUT"},
 	{"LINE_OUT", "Switch", "LINEOUT DAC"},
 	{"LINEOUT DAC", NULL, "PDM_IN_RX3"},
+#ifdef CONFIG_MACH_XIAOMI_C6
+	{ "Ext Spk", NULL, "LINEOUT PA"},
+#endif
 
 	/* lineout to WSA */
 	{"WSA_SPK OUT", NULL, "LINEOUT PA"},
@@ -3254,7 +3244,7 @@ static struct snd_soc_dai_driver msm_anlg_cdc_i2s_dai[] = {
 	},
 };
 
-extern unsigned char aw87329_hw_off(void);
+
 static int msm_anlg_cdc_codec_enable_lo_pa(struct snd_soc_dapm_widget *w,
 					   struct snd_kcontrol *kcontrol,
 					   int event)
@@ -3268,8 +3258,9 @@ static int msm_anlg_cdc_codec_enable_lo_pa(struct snd_soc_dapm_widget *w,
 				       DIG_CDC_EVENT_RX3_MUTE_OFF);
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		aw87329_hw_off();
-		usleep_range(4000, 5000);
+#ifdef CONFIG_MACH_XIAOMI_C6
+		usleep_range(4000, 4100);
+#endif
 		msm_anlg_cdc_dig_notifier_call(codec,
 				       DIG_CDC_EVENT_RX3_MUTE_ON);
 		break;

@@ -2,7 +2,6 @@
  *  linux/mm/vmscan.c
  *
  *  Copyright (C) 1991, 1992, 1993, 1994  Linus Torvalds
- *  Copyright (C) 2019 XiaoMi, Inc.
  *
  *  Swap reorganised 29.12.95, Stephen Tweedie.
  *  kswapd added: 7.1.96  sct
@@ -151,7 +150,7 @@ struct scan_control {
 /*
  * From 0 .. 100.  Higher means more swappy.
  */
-int vm_swappiness = 45;
+int vm_swappiness = 80;
 /*
  * The total number of pages which are beyond the high watermark within all
  * zones.
@@ -2218,6 +2217,10 @@ static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 	unsigned long ap, fp;
 	enum lru_list lru;
 
+	if (!current_is_kswapd()) {
+	swappiness = 60;
+	}
+
 	/* If we have no swap space, do not bother scanning anon pages. */
 	if (!sc->may_swap || mem_cgroup_get_nr_swap_pages(memcg) <= 0) {
 		scan_balance = SCAN_FILE;
@@ -2413,6 +2416,32 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 
 	/* Record the original scan target for proportional adjustments later */
 	memcpy(targets, nr, sizeof(nr));
+
+    /*
+     * sc->priority: 12, 11, 10,  9
+     * (4)    shift:  4,  3,  2,  1
+     *           nr:  2,  4,  8, 16
+     * (5)    shift:  5,  4,  3,  2
+     *           nr:  1,  2,  4,  8
+     * (3)    shift:  3,  2,  1,  0
+     *           nr:  4,  8, 16, 32
+     */
+    /* Only kswapd is allowed to reclaim more anon & file cache pages */
+    if (current_is_kswapd() && sc->priority > 8) {
+        unsigned long adjust_nr = 1;
+        int shift = 4 - DEF_PRIORITY + sc->priority;
+        if (shift >= 0)
+            adjust_nr = SWAP_CLUSTER_MAX >> shift;
+
+        if (nr[LRU_INACTIVE_ANON] < adjust_nr)
+            nr[LRU_INACTIVE_ANON] = adjust_nr;
+        if (nr[LRU_ACTIVE_ANON] < adjust_nr)
+            nr[LRU_ACTIVE_ANON] = adjust_nr;
+        if (nr[LRU_INACTIVE_FILE] < adjust_nr)
+            nr[LRU_INACTIVE_FILE] = adjust_nr;
+        if (nr[LRU_ACTIVE_FILE] < adjust_nr)
+            nr[LRU_ACTIVE_FILE] = adjust_nr;
+    }
 
 	/*
 	 * Global reclaiming within direct reclaim at DEF_PRIORITY is a normal
@@ -2640,7 +2669,7 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 			/* Record the group's reclaim efficiency */
 			vmpressure(sc->gfp_mask, memcg, false,
 				   sc->nr_scanned - scanned,
-				   sc->nr_reclaimed - reclaimed);
+				   sc->nr_reclaimed - reclaimed, sc->order);
 
 			/*
 			 * Direct reclaim and kswapd have to scan all memory
@@ -2678,7 +2707,7 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 		 */
 		vmpressure(sc->gfp_mask, sc->target_mem_cgroup, true,
 			   sc->nr_scanned - nr_scanned,
-			   sc->nr_reclaimed - nr_reclaimed);
+			   sc->nr_reclaimed - nr_reclaimed, sc->order);
 
 		if (reclaim_state) {
 			sc->nr_reclaimed += reclaim_state->reclaimed_slab;
@@ -3397,7 +3426,7 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int classzone_idx)
 
 		/* Check if kswapd should be suspending */
 		if (try_to_freeze() || kthread_should_stop() ||
-		    !atomic_read(&pgdat->kswapd_waiters))
+		    !atomic_long_read(&kswapd_waiters))
 			break;
 
 		/*

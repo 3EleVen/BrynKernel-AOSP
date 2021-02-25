@@ -1,5 +1,4 @@
 /* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -139,6 +138,9 @@ void mdss_dump_dsi_debug_bus(u32 bus_dump_flag,
 	pr_info("========End DSI Debug Bus=========\n");
 }
 
+#ifdef CONFIG_MACH_XIAOMI_C6
+int panel_suspend_reset_flag = 0;
+#endif
 static void mdss_dsi_pm_qos_add_request(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	struct irq_info *irq_info;
@@ -395,6 +397,13 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
 		pr_debug("reset disable: pinctrl not enabled\n");
 
+#ifdef CONFIG_MACH_XIAOMI_C6
+	if (panel_suspend_reset_flag == 2)
+		msleep(1); /* delay 1ms */
+	else if (panel_suspend_reset_flag == 3)
+		msleep(4); /* delay 4ms */
+#endif
+
 	ret = msm_mdss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 0);
@@ -526,7 +535,7 @@ int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 	}
 
 	pinfo = &pdata->panel_info;
-	pr_info("%pS-->%s: cur_power_state=%d req_power_state=%d\n",
+	pr_debug("%pS-->%s: cur_power_state=%d req_power_state=%d\n",
 		__builtin_return_address(0), __func__,
 		pinfo->panel_power_state, power_state);
 
@@ -1531,7 +1540,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 		mdss_dsi_validate_debugfs_info(ctrl_pdata);
 
 	cur_power_state = pdata->panel_info.panel_power_state;
-	pr_info("%s+: ctrl=%pK ndx=%d cur_power_state=%d\n", __func__,
+	pr_debug("%s+: ctrl=%pK ndx=%d cur_power_state=%d\n", __func__,
 		ctrl_pdata, ctrl_pdata->ndx, cur_power_state);
 
 	pinfo = &pdata->panel_info;
@@ -1620,7 +1629,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 				  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_OFF);
 
 end:
-	pr_info("%s-:\n", __func__);
+	pr_debug("%s-:\n", __func__);
 	return ret;
 }
 
@@ -1863,6 +1872,68 @@ static int mdss_dsi_post_panel_on(struct mdss_panel_data *pdata)
 	pr_debug("%s-:\n", __func__);
 
 	return 0;
+}
+
+static int mdss_dsi_disp_wake_thread(void *data)
+{
+	static const struct sched_param max_rt_param = {
+		.sched_priority = MAX_RT_PRIO - 1
+	};
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = data;
+	struct mdss_panel_data *pdata = &ctrl_pdata->panel_data;
+
+	sched_setscheduler_nocheck(current, SCHED_FIFO, &max_rt_param);
+
+	while (1) {
+		bool should_stop;
+
+		wait_event(ctrl_pdata->wake_waitq,
+			(should_stop = kthread_should_stop()) ||
+			atomic_cmpxchg(&ctrl_pdata->disp_en,
+				       MDSS_DISPLAY_WAKING,
+				       MDSS_DISPLAY_ON) == MDSS_DISPLAY_WAKING);
+
+		if (should_stop)
+			break;
+
+		/* MDSS_EVENT_LINK_READY */
+		if (ctrl_pdata->refresh_clk_rate)
+			mdss_dsi_clk_refresh(pdata,
+					     ctrl_pdata->update_phy_timing);
+		mdss_dsi_on(pdata);
+
+		/* MDSS_EVENT_UNBLANK */
+		mdss_dsi_unblank(pdata);
+
+		/* MDSS_EVENT_PANEL_ON */
+		ctrl_pdata->ctrl_state |= CTRL_STATE_MDP_ACTIVE;
+		pdata->panel_info.esd_rdy = true;
+
+		complete_all(&ctrl_pdata->wake_comp);
+	}
+
+	return 0;
+}
+
+static void mdss_dsi_display_wake(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	if (atomic_cmpxchg(&ctrl_pdata->disp_en, MDSS_DISPLAY_OFF,
+			   MDSS_DISPLAY_WAKING) == MDSS_DISPLAY_OFF)
+		wake_up(&ctrl_pdata->wake_waitq);
+}
+
+static int mdss_dsi_fb_unblank_cb(struct notifier_block *nb,
+				  unsigned long action, void *data)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata =
+		container_of(nb, typeof(*ctrl_pdata), wake_notif);
+	int *blank = ((struct fb_event *)data)->data;
+
+	/* Parse unblank events as soon as they occur */
+	if (action == FB_EARLY_EVENT_BLANK && *blank == FB_BLANK_UNBLANK)
+		mdss_dsi_display_wake(ctrl_pdata);
+
+	return NOTIFY_OK;
 }
 
 static irqreturn_t test_hw_vsync_handler(int irq, void *data)
@@ -2740,26 +2811,11 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		ctrl_pdata->refresh_clk_rate = true;
 		break;
 	case MDSS_EVENT_LINK_READY:
-		if (ctrl_pdata->refresh_clk_rate)
-			rc = mdss_dsi_clk_refresh(pdata,
-				ctrl_pdata->update_phy_timing);
-
-		rc = mdss_dsi_on(pdata);
-		mdss_dsi_op_mode_config(pdata->panel_info.mipi.mode,
-							pdata);
-		break;
-	case MDSS_EVENT_UNBLANK:
-		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE)
-			rc = mdss_dsi_unblank(pdata);
+		/* The unblank notifier handles waking for unblank events */
+		mdss_dsi_display_wake(ctrl_pdata);
 		break;
 	case MDSS_EVENT_POST_PANEL_ON:
 		rc = mdss_dsi_post_panel_on(pdata);
-		break;
-	case MDSS_EVENT_PANEL_ON:
-		ctrl_pdata->ctrl_state |= CTRL_STATE_MDP_ACTIVE;
-		if (ctrl_pdata->on_cmds.link_state == DSI_HS_MODE)
-			rc = mdss_dsi_unblank(pdata);
-		pdata->panel_info.esd_rdy = true;
 		break;
 	case MDSS_EVENT_BLANK:
 		power_state = (int) (unsigned long) arg;
@@ -2772,6 +2828,8 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
 			rc = mdss_dsi_blank(pdata, power_state);
 		rc = mdss_dsi_off(pdata, power_state);
+		reinit_completion(&ctrl_pdata->wake_comp);
+		atomic_set(&ctrl_pdata->disp_en, MDSS_DISPLAY_OFF);
 		break;
 	case MDSS_EVENT_CONT_SPLASH_FINISH:
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE)
@@ -2992,6 +3050,13 @@ static struct device_node *mdss_dsi_find_panel_of_node(
 		}
 		pr_info("%s: cmdline:%s panel_name:%s\n",
 			__func__, panel_cfg, panel_name);
+#ifdef CONFIG_MACH_XIAOMI_C6
+		if (!strcmp(panel_name, "qcom,mdss_dsi_otm1911_fhd_video"))
+			panel_suspend_reset_flag = 2;
+		else if (!strcmp(panel_name, "qcom,mdss_dsi_ili9885_boe_fhd_video"))
+			panel_suspend_reset_flag = 3;
+		else
+#endif
 		if (!strcmp(panel_name, NONE_PANEL))
 			goto exit;
 
@@ -3042,7 +3107,7 @@ static struct device_node *mdss_dsi_config_panel(struct platform_device *pdev,
 	int ndx)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = platform_get_drvdata(pdev);
-	char panel_cfg[MDSS_MAX_PANEL_LEN];
+	char panel_cfg[MDSS_MAX_PANEL_LEN + 1];
 	struct device_node *dsi_pan_node = NULL;
 	int rc = 0;
 
@@ -3459,6 +3524,22 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		ctrl_pdata->shared_data->dsi1_active = true;
 
 	mdss_dsi_debug_bus_init(mdss_dsi_res);
+
+	init_completion(&ctrl_pdata->wake_comp);
+	init_waitqueue_head(&ctrl_pdata->wake_waitq);
+	ctrl_pdata->wake_thread = kthread_run(mdss_dsi_disp_wake_thread,
+					      ctrl_pdata, "mdss_display_wake");
+	if (IS_ERR(ctrl_pdata->wake_thread)) {
+		rc = PTR_ERR(ctrl_pdata->wake_thread);
+		pr_err("%s: Failed to start display wake thread, rc=%d\n",
+		       __func__, rc);
+		goto error_shadow_clk_deinit;
+	}
+
+	/* It's sad but not fatal for the fb client register to fail */
+	ctrl_pdata->wake_notif.notifier_call = mdss_dsi_fb_unblank_cb;
+	ctrl_pdata->wake_notif.priority = INT_MAX;
+	fb_register_client(&ctrl_pdata->wake_notif);
 
 	return 0;
 
@@ -3941,6 +4022,8 @@ static int mdss_dsi_ctrl_remove(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
+	fb_unregister_client(&ctrl_pdata->wake_notif);
+	kthread_stop(ctrl_pdata->wake_thread);
 	mdss_dsi_pm_qos_remove_request(ctrl_pdata->shared_data);
 
 	if (msm_mdss_config_vreg(&pdev->dev,
@@ -4175,6 +4258,54 @@ static int mdss_dsi_parse_ctrl_params(struct platform_device *ctrl_pdev,
 
 }
 
+#ifdef CONFIG_MACH_XIAOMI_C6
+u32 te_count;
+static irqreturn_t te_interrupt(int irq, void *data)
+{
+	disable_irq_nosync(irq);
+	te_count++;
+	enable_irq(irq);
+
+	return IRQ_HANDLED;
+}
+
+int init_te_irq(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int rc = -1;
+	int irq;
+
+	if (gpio_is_valid(ctrl_pdata->disp_te_gpio)) {
+		rc = gpio_request(ctrl_pdata->disp_te_gpio, "te-gpio");
+		if (rc < 0) {
+			pr_err("%s: gpio_request fail rc=%d\n", __func__, rc);
+			return rc ;
+		}
+
+		rc = gpio_direction_input(ctrl_pdata->disp_te_gpio);
+		if (rc < 0) {
+			pr_err("%s: gpio_direction_input fail rc=%d\n",
+				__func__, rc);
+			return rc ;
+		}
+
+		irq = gpio_to_irq(ctrl_pdata->disp_te_gpio);
+		pr_debug("%s:liujia irq = %d\n", __func__, irq);
+		rc = request_threaded_irq(irq, te_interrupt, NULL,
+			IRQF_TRIGGER_RISING|IRQF_ONESHOT,
+			"te-irq", ctrl_pdata);
+		if (rc < 0) {
+			pr_err("%s: request_irq fail rc=%d\n", __func__, rc);
+			return rc ;
+		}
+	} else {
+		 pr_err("%s:liujia irq gpio not provided\n", __func__);
+		 return rc;
+	}
+
+	return 0;
+}
+#endif /* MACH_XIAOMI_C6 */
+
 static int mdss_dsi_parse_gpio_params(struct platform_device *ctrl_pdev,
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
@@ -4349,6 +4480,12 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 		ctrl_pdata->check_status = mdss_dsi_reg_status_check;
 	else if (ctrl_pdata->status_mode == ESD_BTA)
 		ctrl_pdata->check_status = mdss_dsi_bta_status_check;
+#ifdef CONFIG_MACH_XIAOMI_C6
+	else if (ctrl_pdata->status_mode == ESD_TE_NT35596) {
+		ctrl_pdata->check_status = mdss_dsi_TE_NT35596_check;
+		init_te_irq(ctrl_pdata);
+	}
+#endif
 
 	if (ctrl_pdata->status_mode == ESD_MAX) {
 		pr_err("%s: Using default BTA for ESD check\n", __func__);

@@ -1,19 +1,9 @@
-#
-# Fingerprint device configuration
-#
-
-menu "Fingerprint device support"
-
-config FINGERPRINT_FPC1020
-	tristate "fpc fpc1020 fingerprint driver support"
+config INPUT_FINGERPRINT
+	tristate "Fingerprint driver support"
 	help
-	  Say Y here if you have fpc2010 fingerprint device
+	  Say Y here to enable fingerprint driver support.
 
-config GOODIX_FINGERPRINT
-	tristate "goodix fingerprint driver support"
-	default y
-	help
-	  Say Y here if you have goodix fingerprint devices
-
-endmenu
-
+if MACH_XIAOMI_C6
+source "drivers/input/fingerprint/goodix_mido/Kconfig"
+source "drivers/input/fingerprint/fpc_mido/Kconfig"
+endif

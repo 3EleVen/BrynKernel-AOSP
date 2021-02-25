@@ -1,5 +1,5 @@
-/* Copyright (c) 2015-2016, 2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+/* Copyright (c) 2015-2016, 2018, 2020, The Linux Foundation.
+ * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -87,11 +87,12 @@ static struct wcd_mbhc_config mbhc_cfg = {
 	.swap_gnd_mic = NULL,
 	.hs_ext_micbias = false,
 	.key_code[0] = KEY_MEDIA,
-        .key_code[1] = KEY_VOICECOMMAND,
-#if 1
-	.key_code[2] = BTN_1,
-	.key_code[3] = BTN_2,
+#ifdef CONFIG_MACH_XIAOMI_C6
+	.key_code[1] = BTN_1,
+	.key_code[2] = BTN_2,
+	.key_code[3] = 0,
 #else
+	.key_code[1] = KEY_VOICECOMMAND,
 	.key_code[2] = KEY_VOLUMEUP,
 	.key_code[3] = KEY_VOLUMEDOWN,
 #endif
@@ -167,59 +168,6 @@ static void param_set_mask(struct snd_pcm_hw_params *p, int n,
 		m->bits[1] = 0;
 		m->bits[bit >> 5] |= (1 << (bit & 31));
 	}
-}
-extern unsigned char aw87329_audio_kspk(void);
-extern unsigned char aw87329_audio_drcv(void);
-extern unsigned char aw87329_audio_off(void);
-static int aw87329_kspk_control = 0;
-static int aw87329_drcv_control = 0;
-static const char *const ext_kspk_amp_function[] = { "Off", "On" };
-static const char *const ext_drcv_amp_function[] = { "Off", "On" };
-static int ext_kspk_amp_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
-{
-	ucontrol->value.integer.value[0] = aw87329_kspk_control;
-	pr_err("%s: aw87329_kspk_control = %d\n", __func__,
-	aw87329_kspk_control);
-	return 0;
-}
-static int ext_kspk_amp_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
-{
-	if(ucontrol->value.integer.value[0] == aw87329_kspk_control)
-		return 1;
-	aw87329_kspk_control = ucontrol->value.integer.value[0];
-	pr_err("%s: ext_kspk_amp_put = %d\n", __func__,
-	aw87329_kspk_control);
-	if(ucontrol->value.integer.value[0]) {
-		aw87329_audio_kspk();
-	} else {
-		aw87329_audio_off();
-	}
-	pr_err("%s: value.integer.value = %ld\n", __func__,
-	ucontrol->value.integer.value[0]);
-	return 0;
-}
-static int ext_drcv_amp_get(struct snd_kcontrol *kcontrol,
-struct snd_ctl_elem_value *ucontrol)
-{
-	ucontrol->value.integer.value[0] = aw87329_drcv_control;
-	pr_err("%s: aw87329_drcv_control = %d\n", __func__,
-	aw87329_drcv_control);
-	return 0;
-}
-static int ext_drcv_amp_put(struct snd_kcontrol *kcontrol,
-struct snd_ctl_elem_value *ucontrol)
-{
-	aw87329_drcv_control = ucontrol->value.integer.value[0];
-	if(ucontrol->value.integer.value[0] == aw87329_drcv_control)
-		return 1;
-	if(ucontrol->value.integer.value[0]) {
-		aw87329_audio_drcv();
-	} else {
-	aw87329_audio_off();
-	}
-	pr_debug("%s: value.integer.value = %ld\n", __func__,
-	ucontrol->value.integer.value[0]);
-	return 0;
 }
 
 static int msm8952_mclk_event(struct snd_soc_dapm_widget *w,
@@ -385,6 +333,9 @@ int is_ext_spk_gpio_support(struct platform_device *pdev,
 			return -EINVAL;
 		}
 	}
+#ifdef CONFIG_MACH_XIAOMI_C6
+	gpio_direction_output(pdata->spk_ext_pa_gpio, 0);
+#endif
 	return 0;
 }
 
@@ -392,7 +343,11 @@ static int enable_spk_ext_pa(struct snd_soc_codec *codec, int enable)
 {
 	struct snd_soc_card *card = codec->component.card;
 	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+#ifdef CONFIG_MACH_XIAOMI_C6
+	int pa_mode = EXT_PA_MODE;
+#else
 	int ret;
+#endif
 
 	if (!gpio_is_valid(pdata->spk_ext_pa_gpio)) {
 		pr_err("%s: Invalid gpio: %d\n", __func__,
@@ -404,6 +359,15 @@ static int enable_spk_ext_pa(struct snd_soc_codec *codec, int enable)
 		enable ? "Enable" : "Disable");
 
 	if (enable) {
+#ifdef CONFIG_MACH_XIAOMI_C6
+		while (pa_mode > 0) {
+			gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, 0);
+			udelay(2);
+			gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
+			udelay(2);
+			pa_mode--;
+		}
+#else
 		ret =  msm_cdc_pinctrl_select_active_state(
 					pdata->spk_ext_pa_gpio_p);
 		if (ret) {
@@ -412,8 +376,10 @@ static int enable_spk_ext_pa(struct snd_soc_codec *codec, int enable)
 			return ret;
 		}
 		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
+#endif
 	} else {
 		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
+#ifndef CONFIG_MACH_XIAOMI_C6
 		ret = msm_cdc_pinctrl_select_sleep_state(
 				pdata->spk_ext_pa_gpio_p);
 		if (ret) {
@@ -421,6 +387,7 @@ static int enable_spk_ext_pa(struct snd_soc_codec *codec, int enable)
 					__func__, "ext_spk_gpio");
 			return ret;
 		}
+#endif
 	}
 	return 0;
 }
@@ -1110,10 +1077,6 @@ static const struct soc_enum msm_snd_enum[] = {
 				vi_feed_ch_text),
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(mi2s_rx_sample_rate_text),
 				mi2s_rx_sample_rate_text),
-	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(ext_kspk_amp_function),
-				ext_kspk_amp_function),
-	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(ext_drcv_amp_function),
-				ext_drcv_amp_function),
 };
 
 static const struct snd_kcontrol_new msm_snd_controls[] = {
@@ -1133,10 +1096,6 @@ static const struct snd_kcontrol_new msm_snd_controls[] = {
 			msm_vi_feed_tx_ch_get, msm_vi_feed_tx_ch_put),
 	SOC_ENUM_EXT("MI2S_RX SampleRate", msm_snd_enum[6],
 			mi2s_rx_sample_rate_get, mi2s_rx_sample_rate_put),
-	SOC_ENUM_EXT("Ext_Speaker_Amp", msm_snd_enum[7],
-		ext_kspk_amp_get, ext_kspk_amp_put),
-	SOC_ENUM_EXT("Ext_Receiver_Amp", msm_snd_enum[8],
-		ext_drcv_amp_get, ext_drcv_amp_put),
 };
 
 static int msm8952_enable_wsa_mclk(struct snd_soc_card *card, bool enable)
@@ -1583,7 +1542,11 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 		return NULL;
 
 #define S(X, Y) ((WCD_MBHC_CAL_PLUG_TYPE_PTR(msm8952_wcd_cal)->X) = (Y))
-	S(v_hs_max, 1700);
+#ifdef CONFIG_MACH_XIAOMI_C6
+	S(v_hs_max, 1600);
+#else
+	S(v_hs_max, 1500);
+#endif
 #undef S
 #define S(X, Y) ((WCD_MBHC_CAL_BTN_DET_PTR(msm8952_wcd_cal)->X) = (Y))
 	S(num_btn, WCD_MBHC_DEF_BUTTONS);
@@ -1606,17 +1569,29 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 	 * 210-290 == Button 2
 	 * 360-680 == Button 3
 	 */
-	 /*modified MBHC keys*/
+#if defined(CONFIG_MACH_XIAOMI_C6)
+	btn_low[0] = 73;
+	btn_high[0] = 73;
+	btn_low[1] = 233;
+	btn_high[1] = 233;
+	btn_low[2] = 438;
+	btn_high[2] = 438;
+	btn_low[3] = 438;
+	btn_high[3] = 438;
+	btn_low[4] = 438;
+	btn_high[4] = 438;
+#else
 	btn_low[0] = 75;
 	btn_high[0] = 75;
-	btn_low[1] = 225;  /*formal 150*/
-	btn_high[1] = 225; /*formal 150*/
-	btn_low[2] = 450;  /*formal 225*/
-	btn_high[2] = 450; /*formal 225*/
-	btn_low[3] = 500;  /*formal 450*/
-	btn_high[3] = 500; /*formal 450*/
+	btn_low[1] = 150;
+	btn_high[1] = 150;
+	btn_low[2] = 225;
+	btn_high[2] = 225;
+	btn_low[3] = 450;
+	btn_high[3] = 450;
 	btn_low[4] = 500;
 	btn_high[4] = 500;
+#endif
 
 	return msm8952_wcd_cal;
 }
@@ -1651,6 +1626,7 @@ static int msm_audrx_init(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_dapm_ignore_suspend(dapm, "DMIC2");
 	snd_soc_dapm_ignore_suspend(dapm, "WSA_SPK OUT");
 	snd_soc_dapm_ignore_suspend(dapm, "LINEOUT");
+	snd_soc_dapm_ignore_suspend(dapm, "Ext Spk");
 
 	snd_soc_dapm_sync(dapm);
 
@@ -2696,6 +2672,33 @@ static struct snd_soc_dai_link msm8952_dai[] = {
 		.ops = &msm8952_quin_mi2s_be_ops,
 		.ignore_suspend = 1,
 	},
+	/* Proxy Tx BACK END DAI Link */
+	{
+		.name = LPASS_BE_PROXY_TX,
+		.stream_name = "Proxy Capture",
+		.cpu_dai_name = "msm-dai-q6-dev.8195",
+		.platform_name = "msm-pcm-routing",
+		.codec_name = "msm-stub-codec.1",
+		.codec_dai_name = "msm-stub-tx",
+		.no_pcm = 1,
+		.dpcm_capture = 1,
+		.id = MSM_BACKEND_DAI_PROXY_TX,
+		.ignore_suspend = 1,
+	},
+	/* Proxy Rx BACK END DAI Link */
+	{
+		.name = LPASS_BE_PROXY_RX,
+		.stream_name = "Proxy Playback",
+		.cpu_dai_name = "msm-dai-q6-dev.8194",
+		.platform_name = "msm-pcm-routing",
+		.codec_name = "msm-stub-codec.1",
+		.codec_dai_name = "msm-stub-rx",
+		.no_pcm = 1,
+		.dpcm_playback = 1,
+		.id = MSM_BACKEND_DAI_PROXY_RX,
+		.ignore_pmdown_time = 1,
+		.ignore_suspend = 1,
+	},
 };
 static struct snd_soc_dai_link msm8952_hdmi_dba_dai_link[] = {
 	{
@@ -3058,7 +3061,6 @@ static int msm8952_asoc_machine_probe(struct platform_device *pdev)
 	const char *type = NULL;
 	const char *ext_pa_str = NULL;
 	const char *spk_ext_pa = "qcom,msm-spk-ext-pa";
-	const char *spk_ext_pa_gpios = "qcom,msm-spk-ext-pa-gpios";
 	int num_strings;
 	int id, i, val;
 	int ret = 0;
@@ -3258,7 +3260,7 @@ parse_mclk_freq:
 	}
 
 	pdata->spk_ext_pa_gpio_p = of_parse_phandle(pdev->dev.of_node,
-							spk_ext_pa_gpios, 0);
+							"qcom,cdc-ext-pa-gpios", 0);
 
 	ret = is_us_eu_switch_gpio_support(pdev, pdata);
 	if (ret < 0) {

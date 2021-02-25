@@ -36,7 +36,6 @@
 #include <linux/pstore_ram.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/memblock.h>
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
@@ -46,7 +45,11 @@ module_param(record_size, ulong, 0400);
 MODULE_PARM_DESC(record_size,
 		"size of each dump done on oops/panic");
 
+#if defined(CONFIG_MACH_XIAOMI_C6) || defined(CONFIG_MACH_XIAOMI_D2)
+static ulong ramoops_console_size = 512*1024UL;
+#else
 static ulong ramoops_console_size = MIN_MEM_SIZE;
+#endif
 module_param_named(console_size, ramoops_console_size, ulong, 0400);
 MODULE_PARM_DESC(console_size, "size of kernel console log");
 
@@ -54,16 +57,28 @@ static ulong ramoops_ftrace_size = MIN_MEM_SIZE;
 module_param_named(ftrace_size, ramoops_ftrace_size, ulong, 0400);
 MODULE_PARM_DESC(ftrace_size, "size of ftrace log");
 
+#if defined(CONFIG_MACH_XIAOMI_C6) || defined(CONFIG_MACH_XIAOMI_D2)
+static ulong ramoops_pmsg_size = 32*1024UL;
+#else
 static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
+#endif
 module_param_named(pmsg_size, ramoops_pmsg_size, ulong, 0400);
 MODULE_PARM_DESC(pmsg_size, "size of user space message log");
 
+#if defined(CONFIG_MACH_XIAOMI_C6) || defined(CONFIG_MACH_XIAOMI_D2)
+static unsigned long long mem_address = 0x9ff00000;
+#else
 static unsigned long long mem_address;
+#endif
 module_param(mem_address, ullong, 0400);
 MODULE_PARM_DESC(mem_address,
 		"start of reserved RAM used to store oops/panic logs");
 
+#if defined(CONFIG_MACH_XIAOMI_C6) || defined(CONFIG_MACH_XIAOMI_D2)
+static ulong mem_size = 0x100000;
+#else
 static ulong mem_size;
+#endif
 module_param(mem_size, ulong, 0400);
 MODULE_PARM_DESC(mem_size,
 		"size of reserved RAM used to store oops/panic logs");
@@ -602,10 +617,6 @@ static int ramoops_probe(struct platform_device *pdev)
 		goto fail_out;
 	}
 
-// xuke @ 20180611	Import pstore patch from XiaoMi.	Begin
-	if (pdata->mem_size && !is_power_of_2(pdata->mem_size))
-		pdata->mem_size = rounddown_pow_of_two(pdata->mem_size);
-// End
 	if (pdata->record_size && !is_power_of_2(pdata->record_size))
 		pdata->record_size = rounddown_pow_of_two(pdata->record_size);
 	if (pdata->console_size && !is_power_of_2(pdata->console_size))
@@ -777,77 +788,6 @@ static void ramoops_register_dummy(void)
 			PTR_ERR(dummy));
 	}
 }
-
-// xuke @ 20180611	Import pstore patch from XiaoMi.	Begin
-static struct ramoops_platform_data ramoops_data;
-
-static struct platform_device ramoops_dev  = {
-	.name = "ramoops",
-	.dev = {
-		.platform_data = &ramoops_data,
-	},
-};
-
-static int __init ramoops_memreserve(char *p)
-{
-	unsigned long size = 0;
-
-	if (!p)
-		return 1;
-
-	size = memparse(p, &p) & PAGE_MASK;
-
-	ramoops_data.mem_size = size;
-	ramoops_data.console_size = size / 2;
-	ramoops_data.pmsg_size = size / 2;
-//	ramoops_data.record_size = size / 2;
-//	ramoops_data.ftrace_size = size / 2;
-
-	pr_info("xuke: %s, mem_size=0x%lx, console_size=0x%lx, pmsg_size=0x%lx, record_size=%lx, ftrace_size=%lx, mem_address=0x%llx\n", __func__,
-		ramoops_data.mem_size, ramoops_data.console_size, ramoops_data.pmsg_size,
-		ramoops_data.record_size, ramoops_data.ftrace_size, (unsigned long long)ramoops_data.mem_address);
-
-// xuke @ 20180614	To get the last KMSG log in fastboot.	Begin
-	if (ramoops_data.mem_address)
-		memblock_reserve(ramoops_data.mem_address, ramoops_data.mem_size);
-// End
-	return 0;
-}
-early_param("ramoops_memreserve", ramoops_memreserve);
-
-// xuke @ 20180614	To get the last KMSG log in fastboot.	Begin
-static int __init ramoops_memreserve_addr(char *p)
-{
-	phys_addr_t addr = 0;
-
-	if (!p)
-		return 1;
-
-	addr = memparse(p, &p) & PAGE_MASK;
-
-	ramoops_data.mem_address = addr;
-	ramoops_data.dump_oops = 1;
-
-	pr_info("xuke: %s, mem_address=0x%llx\n", __func__, (unsigned long long)ramoops_data.mem_address);
-
-	if (ramoops_data.mem_size)
-		memblock_reserve(ramoops_data.mem_address, ramoops_data.mem_size);
-
-	return 0;
-}
-early_param("ramoops_memreserve_addr", ramoops_memreserve_addr);
-// End
-
-static int __init msm_register_ramoops_device(void)
-{
-    pr_info("msm_register_ramoops_device \n");
-	if (platform_device_register(&ramoops_dev))
-		pr_info("Unable to register ramoops platform device\n");
-    return 0;
-}
-core_initcall(msm_register_ramoops_device);
-// End
-
 
 static int __init ramoops_init(void)
 {

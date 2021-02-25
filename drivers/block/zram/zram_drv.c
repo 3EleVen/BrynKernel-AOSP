@@ -40,11 +40,7 @@ static DEFINE_IDR(zram_index_idr);
 static DEFINE_MUTEX(zram_index_mutex);
 
 static int zram_major;
-#ifdef CONFIG_CRYPTO_LZ4
-static const char *default_compressor = "lz4";
-#else
-static const char *default_compressor = "lzo";
-#endif
+static const char *default_compressor = CONFIG_ZRAM_DEFAULT_COMP_ALGORITHM;
 
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
@@ -219,14 +215,17 @@ static inline void zram_fill_page(char *ptr, unsigned long len,
 
 static bool page_same_filled(void *ptr, unsigned long *element)
 {
-	unsigned int pos;
 	unsigned long *page;
 	unsigned long val;
+	unsigned int pos, last_pos = PAGE_SIZE / sizeof(*page) - 1;
 
 	page = (unsigned long *)ptr;
 	val = page[0];
 
-	for (pos = 1; pos < PAGE_SIZE / sizeof(*page); pos++) {
+	if (val != page[last_pos])
+		return false;
+
+	for (pos = 1; pos < last_pos; pos++) {
 		if (val != page[pos])
 			return false;
 	}

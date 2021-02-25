@@ -2204,7 +2204,7 @@ static int kgsl_setup_anon_useraddr(struct kgsl_pagetable *pagetable,
 	entry->memdesc.flags |= (uint64_t)KGSL_MEMFLAGS_USERMEM_ADDR;
 
 	if (kgsl_memdesc_use_cpu_map(&entry->memdesc)) {
-		int ret;
+                int ret;
 
 		/* Register the address in the database */
 		ret = kgsl_mmu_set_svm_region(pagetable,
@@ -4655,8 +4655,6 @@ struct kgsl_driver kgsl_driver  = {
 	.stats.secure_max = ATOMIC_LONG_INIT(0),
 	.stats.mapped = ATOMIC_LONG_INIT(0),
 	.stats.mapped_max = ATOMIC_LONG_INIT(0),
-	.stats.page_free_pending = ATOMIC_LONG_INIT(0),
-	.stats.page_alloc_pending = ATOMIC_LONG_INIT(0),
 };
 EXPORT_SYMBOL(kgsl_driver);
 
@@ -4863,7 +4861,7 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 	}
 
 	device->events_wq = alloc_workqueue("kgsl-events",
-		WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS | WQ_POWER_EFFICIENT | WQ_HIGHPRI, 0);
+		WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS, 0);
 
 	/* Initialize the snapshot engine */
 	kgsl_device_snapshot_init(device);
@@ -4941,7 +4939,7 @@ static void kgsl_core_exit(void)
 static int __init kgsl_core_init(void)
 {
 	int result = 0;
-	struct sched_param param = { .sched_priority = 2 };
+	struct sched_param param = { .sched_priority = 6 };
 
 	/* alloc major and minor device numbers */
 	result = alloc_chrdev_region(&kgsl_driver.major, 0, KGSL_DEVICE_MAX,
@@ -5004,7 +5002,7 @@ static int __init kgsl_core_init(void)
 	INIT_LIST_HEAD(&kgsl_driver.pagetable_list);
 
 	kgsl_driver.workqueue = alloc_workqueue("kgsl-workqueue",
-		WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS, 0);
+		WQ_HIGHPRI | WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS, 0);
 
 	kgsl_driver.mem_workqueue = alloc_workqueue("kgsl-mementry",
 		WQ_UNBOUND | WQ_MEM_RECLAIM, 0);

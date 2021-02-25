@@ -3,7 +3,6 @@
  * Android IPC Subsystem
  *
  * Copyright (C) 2007-2008 Google, Inc.
- * Copyright (C) 2020 XiaoMi, Inc.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -75,7 +74,7 @@
 #include "binder_trace.h"
 
 static HLIST_HEAD(binder_deferred_list);
-static DEFINE_SPINLOCK(binder_deferred_lock);
+static DEFINE_MUTEX(binder_deferred_lock);
 
 static HLIST_HEAD(binder_devices);
 static HLIST_HEAD(binder_procs);
@@ -135,7 +134,8 @@ enum {
 	BINDER_DEBUG_PRIORITY_CAP           = 1U << 13,
 	BINDER_DEBUG_SPINLOCKS              = 1U << 14,
 };
-static uint32_t binder_debug_mask = 0;
+static uint32_t binder_debug_mask = BINDER_DEBUG_USER_ERROR |
+	BINDER_DEBUG_FAILED_TRANSACTION | BINDER_DEBUG_DEAD_TRANSACTION;
 module_param_named(debug_mask, binder_debug_mask, uint, 0644);
 
 static char *binder_devices_param = CONFIG_ANDROID_BINDER_DEVICES;
@@ -3334,8 +3334,8 @@ static void binder_transaction(struct binder_proc *proc,
 	buffer_offset = off_start_offset;
 	off_end_offset = off_start_offset + tr->offsets_size;
 	sg_buf_offset = ALIGN(off_end_offset, sizeof(void *));
-	sg_buf_end_offset = sg_buf_offset + extra_buffers_size-
-		ALIGN(secctx_sz,sizeof(u64));
+	sg_buf_end_offset = sg_buf_offset + extra_buffers_size -
+		ALIGN(secctx_sz, sizeof(u64));
 	off_min = 0;
 	for (buffer_offset = off_start_offset; buffer_offset < off_end_offset;
 	     buffer_offset += sizeof(binder_size_t)) {
@@ -3536,8 +3536,8 @@ static void binder_transaction(struct binder_proc *proc,
 		BUG_ON(t->buffer->async_transaction != 0);
 		binder_pop_transaction_ilocked(target_thread, in_reply_to);
 		binder_enqueue_thread_work_ilocked(target_thread, &t->work);
+		wake_up_interruptible(&target_thread->wait);
 		binder_inner_proc_unlock(target_proc);
-		wake_up_interruptible_sync(&target_thread->wait);
 		binder_restore_priority(current, in_reply_to->saved_priority);
 		binder_free_transaction(in_reply_to);
 	} else if (!(t->flags & TF_ONE_WAY)) {
@@ -4306,7 +4306,7 @@ retry:
 			e->cmd = BR_OK;
 			ptr += sizeof(uint32_t);
 
-			binder_stat_br(proc, thread, cmd);
+			binder_stat_br(proc, thread, e->cmd);
 		} break;
 		case BINDER_WORK_TRANSACTION_COMPLETE: {
 			binder_inner_proc_unlock(proc);
@@ -5469,7 +5469,7 @@ static void binder_deferred_func(struct work_struct *work)
 	int defer;
 
 	do {
-		spin_lock(&binder_deferred_lock);
+		mutex_lock(&binder_deferred_lock);
 		if (!hlist_empty(&binder_deferred_list)) {
 			proc = hlist_entry(binder_deferred_list.first,
 					struct binder_proc, deferred_work_node);
@@ -5480,7 +5480,7 @@ static void binder_deferred_func(struct work_struct *work)
 			proc = NULL;
 			defer = 0;
 		}
-		spin_unlock(&binder_deferred_lock);
+		mutex_unlock(&binder_deferred_lock);
 
 		files = NULL;
 		if (defer & BINDER_DEFERRED_PUT_FILES) {
@@ -5506,14 +5506,14 @@ static DECLARE_WORK(binder_deferred_work, binder_deferred_func);
 static void
 binder_defer_work(struct binder_proc *proc, enum binder_deferred_state defer)
 {
-	spin_lock(&binder_deferred_lock);
+	mutex_lock(&binder_deferred_lock);
 	proc->deferred_work |= defer;
 	if (hlist_unhashed(&proc->deferred_work_node)) {
 		hlist_add_head(&proc->deferred_work_node,
 				&binder_deferred_list);
 		schedule_work(&binder_deferred_work);
 	}
-	spin_unlock(&binder_deferred_lock);
+	mutex_unlock(&binder_deferred_lock);
 }
 
 static void print_binder_transaction_ilocked(struct seq_file *m,

@@ -1,3 +1,2 @@
-obj-$(CONFIG_FINGERPRINT_FPC1020) += fpc1020_platform_tee.o fpc_irq.o
-obj-$(CONFIG_GOODIX_FINGERPRINT) += gf_spi.o platform.o netlink.o
-
+obj-$(CONFIG_FINGERPRINT_GOODIX_GF3208_C6)	+= goodix_mido/
+obj-$(CONFIG_FINGERPRINT_FPC1020_C6)		+= fpc_mido/

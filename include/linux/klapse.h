@@ -1,11 +1,14 @@
 #ifndef _KLAPSE_H
 #define _KLAPSE_H
 
-/* KLAPSE_MDSS : Use 1 if using with MDSS */
+#ifdef CONFIG_FB_MSM
+#define KLAPSE_MDSS 1
+#else
 #define KLAPSE_MDSS 0
+#endif
 
 /* set_rgb_slider : Interface function for brightness-mode */
-typedef u32 bl_type_t;
+typedef int bl_type_t;
 extern void set_rgb_slider(bl_type_t bl_lvl);
 
 /* Variable type for rgb */

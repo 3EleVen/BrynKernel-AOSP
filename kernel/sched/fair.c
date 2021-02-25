@@ -72,7 +72,7 @@ walt_dec_cfs_rq_stats(struct cfs_rq *cfs_rq, struct task_struct *p) {}
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
- * (default: 5ms * (1 + ilog(ncpus)), units: nanoseconds)
+ * (default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  *
  * NOTE: this latency value is not the same as the concept of
  * 'timeslice length' - timeslices in CFS are of variable length
@@ -82,8 +82,8 @@ walt_dec_cfs_rq_stats(struct cfs_rq *cfs_rq, struct task_struct *p) {}
  * (to see the precise effective timeslice length of your workload,
  *  run vmstat and monitor the context-switches (cs) field)
  */
-unsigned int sysctl_sched_latency = 5000000ULL;
-unsigned int normalized_sysctl_sched_latency = 5000000ULL;
+unsigned int sysctl_sched_latency = 6000000ULL;
+unsigned int normalized_sysctl_sched_latency = 6000000ULL;
 
 unsigned int sysctl_sched_is_big_little = 1;
 unsigned int sysctl_sched_sync_hint_enable = 1;
@@ -110,13 +110,13 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling
  * Minimal preemption granularity for CPU-bound tasks:
  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
-unsigned int sysctl_sched_min_granularity = 500000ULL;
-unsigned int normalized_sysctl_sched_min_granularity = 500000ULL;
+unsigned int sysctl_sched_min_granularity = 750000ULL;
+unsigned int normalized_sysctl_sched_min_granularity = 750000ULL;
 
 /*
  * is kept at sysctl_sched_latency / sysctl_sched_min_granularity
  */
-static unsigned int sched_nr_latency = 6;
+static unsigned int sched_nr_latency = 8;
 
 /*
  * After fork, child runs first. If set to 0 (default) then
@@ -135,7 +135,7 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
 unsigned int sysctl_sched_wakeup_granularity = 1000000UL;
 unsigned int normalized_sysctl_sched_wakeup_granularity = 1000000UL;
 
-const_debug unsigned int sysctl_sched_migration_cost = 0;
+const_debug unsigned int sysctl_sched_migration_cost = 500000UL;
 
 /*
  * The exponential sliding  window over which load is averaged for shares
@@ -155,7 +155,7 @@ unsigned int __read_mostly sysctl_sched_shares_window = 10000000UL;
  *
  * default: 5 msec, units: microseconds
   */
-unsigned int sysctl_sched_cfs_bandwidth_slice = 4000UL;
+unsigned int sysctl_sched_cfs_bandwidth_slice = 5000UL;
 #endif
 
 /*
@@ -4335,8 +4335,8 @@ static void throttle_cfs_rq(struct cfs_rq *cfs_rq)
 		qcfs_rq->h_nr_running -= task_delta;
 		walt_dec_throttled_cfs_rq_stats(&qcfs_rq->walt_stats, cfs_rq);
 		walt_propagate_cumulative_runnable_avg(
-				   &qcfs_rq->cumulative_runnable_avg,
-				   cfs_rq->cumulative_runnable_avg, false);
+				   &qcfs_rq->walt_stats.cumulative_runnable_avg,
+				   cfs_rq->walt_stats.cumulative_runnable_avg, false);
 
 		if (qcfs_rq->load.weight)
 			dequeue = 0;
@@ -4346,8 +4346,8 @@ static void throttle_cfs_rq(struct cfs_rq *cfs_rq)
 		sub_nr_running(rq, task_delta);
 		walt_dec_throttled_cfs_rq_stats(&rq->walt_stats, cfs_rq);
 		walt_propagate_cumulative_runnable_avg(
-				   &rq->cumulative_runnable_avg,
-				   cfs_rq->cumulative_runnable_avg, false);
+				   &rq->walt_stats.cumulative_runnable_avg,
+				   cfs_rq->walt_stats.cumulative_runnable_avg, false);
 	}
 
 	cfs_rq->throttled = 1;
@@ -4412,8 +4412,8 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 		cfs_rq->h_nr_running += task_delta;
 		walt_inc_throttled_cfs_rq_stats(&cfs_rq->walt_stats, tcfs_rq);
 		walt_propagate_cumulative_runnable_avg(
-				   &cfs_rq->cumulative_runnable_avg,
-				   tcfs_rq->cumulative_runnable_avg, true);
+				   &cfs_rq->walt_stats.cumulative_runnable_avg,
+				   tcfs_rq->walt_stats.cumulative_runnable_avg, true);
 
 		if (cfs_rq_throttled(cfs_rq))
 			break;
@@ -4423,8 +4423,8 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 		add_nr_running(rq, task_delta);
 		walt_inc_throttled_cfs_rq_stats(&rq->walt_stats, tcfs_rq);
 		walt_propagate_cumulative_runnable_avg(
-				   &rq->cumulative_runnable_avg,
-				   tcfs_rq->cumulative_runnable_avg, true);
+				   &rq->walt_stats.cumulative_runnable_avg,
+				   tcfs_rq->walt_stats.cumulative_runnable_avg, true);
 	}
 
 	/* determine whether we need to wake up potentially idle cpu */
@@ -4888,7 +4888,7 @@ static void walt_fixup_cumulative_runnable_avg_fair(struct rq *rq,
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
 
-		cfs_rq->cumulative_runnable_avg += task_load_delta;
+		cfs_rq->walt_stats.cumulative_runnable_avg += task_load_delta;
 		if (cfs_rq_throttled(cfs_rq))
 			break;
 	}
@@ -7077,7 +7077,6 @@ static int start_cpu(struct task_struct *p, bool boosted,
 }
 
 unsigned int sched_smp_overlap_capacity;
-
 static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 				   bool boosted, bool prefer_idle,
 				   struct find_best_target_env *fbt_env)
@@ -7270,10 +7269,16 @@ retry:
 			}
 
 			/*
-			 * Favor CPUs with smaller capacity for Non latency
-			 * sensitive tasks.
+			 * Enforce EAS mode
+			 *
+			 * For non latency sensitive tasks, skip CPUs that
+			 * will be overutilized by moving the task there.
+			 *
+			 * The goal here is to remain in EAS mode as long as
+			 * possible at least for !prefer_idle tasks.
 			 */
-			if (capacity_orig > target_capacity)
+			if ((new_util * capacity_margin) >
+			    (capacity_orig * SCHED_CAPACITY_SCALE))
 				continue;
 
 			/*
@@ -7520,7 +7525,7 @@ static inline int wake_to_idle(struct task_struct *p)
 }
 
 static inline bool
-bias_to_this_cpu(struct task_struct *p, int cpu, struct cpumask *rtg_target)
+bias_to_waker_cpu(struct task_struct *p, int cpu, struct cpumask *rtg_target)
 {
 	int rtg_target_cpu = rtg_target ? cpumask_first(rtg_target) : cpu;
 
@@ -7608,7 +7613,6 @@ enum fastpaths {
 	NONE = 0,
 	SYNC_WAKEUP,
 	PREV_CPU_BIAS,
-	MANY_WAKEUP,
 };
 
 static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync, int sibling_count_hint)
@@ -7655,20 +7659,13 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 		sync = 0;
 
 	if (sysctl_sched_sync_hint_enable && sync) {
-		if (bias_to_this_cpu(p, cpu, rtg_target)) {
+		if (bias_to_waker_cpu(p, cpu, rtg_target)) {
 			schedstat_inc(p->se.statistics.nr_wakeups_secb_sync);
 			schedstat_inc(this_rq()->eas_stats.secb_sync);
 			target_cpu = cpu;
 			fastpath = SYNC_WAKEUP;
 			goto out;
 		}
-	}
-
-	if (is_many_wakeup(sibling_count_hint) && prev_cpu != cpu &&
-				bias_to_this_cpu(p, prev_cpu, rtg_target)) {
-		target_cpu = prev_cpu;
-		fastpath = MANY_WAKEUP;
-		goto out;
 	}
 
 	if (bias_to_prev_cpu(p, rtg_target)) {

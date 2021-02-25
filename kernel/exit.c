@@ -14,7 +14,6 @@
 #include <linux/tty.h>
 #include <linux/iocontext.h>
 #include <linux/key.h>
-#include <linux/security.h>
 #include <linux/cpu.h>
 #include <linux/acct.h>
 #include <linux/tsacct_kern.h>
@@ -61,6 +60,7 @@
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
+#include <linux/boost_sigkill_free.h>
 
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
@@ -515,11 +515,14 @@ static void exit_mm(struct task_struct *tsk)
 	enter_lazy_tlb(mm, current);
 	task_unlock(tsk);
 	mm_update_next_owner(mm);
+
 	mm_released = mmput(mm);
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+	clear_thread_flag(TIF_MEMDIE);
+#else
 	if (test_thread_flag(TIF_MEMDIE))
 		exit_oom_victim();
-	if (mm_released)
-		set_tsk_thread_flag(tsk, TIF_MM_RELEASED);
+#endif
 }
 
 static struct task_struct *find_alive_thread(struct task_struct *p)
@@ -806,7 +809,6 @@ void __noreturn do_exit(long code)
 	}
 
 	exit_signals(tsk);  /* sets PF_EXITING */
-
 	sched_exit(tsk);
 	schedtune_exit_task(tsk);
 
@@ -954,6 +956,9 @@ do_group_exit(int exit_code)
 		}
 		spin_unlock_irq(&sighand->siglock);
 	}
+
+	if (sig_kernel_kill(exit_code))
+	fast_free_user_mem();
 
 	do_exit(exit_code);
 	/* NOTREACHED */
@@ -1375,7 +1380,7 @@ static int wait_task_continued(struct wait_opts *wo, struct task_struct *p)
  * Returns nonzero for a final return, when we have unlocked tasklist_lock.
  * Returns zero if the search for a child should continue;
  * then ->notask_error is 0 if @p is an eligible child,
- * or another error from security_task_wait(), or still -ECHILD.
+ * or still -ECHILD.
  */
 static int wait_consider_task(struct wait_opts *wo, int ptrace,
 				struct task_struct *p)
@@ -1394,20 +1399,6 @@ static int wait_consider_task(struct wait_opts *wo, int ptrace,
 	ret = eligible_child(wo, ptrace, p);
 	if (!ret)
 		return ret;
-
-	ret = security_task_wait(p);
-	if (unlikely(ret < 0)) {
-		/*
-		 * If we have not yet seen any eligible child,
-		 * then let this error code replace -ECHILD.
-		 * A permission error will give the user a clue
-		 * to look for security policy problems, rather
-		 * than for mysterious wait bugs.
-		 */
-		if (wo->notask_error)
-			wo->notask_error = ret;
-		return 0;
-	}
 
 	if (unlikely(exit_state == EXIT_TRACE)) {
 		/*
@@ -1501,7 +1492,7 @@ static int wait_consider_task(struct wait_opts *wo, int ptrace,
  * Returns nonzero for a final return, when we have unlocked tasklist_lock.
  * Returns zero if the search for a child should continue; then
  * ->notask_error is 0 if there were any eligible children,
- * or another error from security_task_wait(), or still -ECHILD.
+ * or still -ECHILD.
  */
 static int do_wait_thread(struct wait_opts *wo, struct task_struct *tsk)
 {

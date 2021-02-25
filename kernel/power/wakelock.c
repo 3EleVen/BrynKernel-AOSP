@@ -227,6 +227,7 @@ int pm_wake_lock(const char *buf)
 		ret = PTR_ERR(wl);
 		goto out;
 	}
+
 	if (timeout_ns) {
 		u64 timeout_ms = timeout_ns + NSEC_PER_MSEC - 1;
 

@@ -539,7 +539,6 @@ static int vfe_probe(struct platform_device *pdev)
 	char name[10] = "\0";
 	uint32_t num_hw_sd;
 
-	memset(&vfe_common_data, 0, sizeof(vfe_common_data));
 	mutex_init(&vfe_common_data.vfe_common_mutex);
 	spin_lock_init(&vfe_common_data.common_dev_data_lock);
 	spin_lock_init(&vfe_common_data.vfe_irq_dump.
@@ -568,20 +567,21 @@ static int vfe_probe(struct platform_device *pdev)
 		if (!node) {
 			pr_err("%s: Error! Cannot find node in dtsi %s\n",
 				__func__, name);
-			break;
+			goto end;
 		}
 		new_dev = of_find_device_by_node(node);
 		if (!new_dev) {
 			pr_err("%s: Failed to find device on bus %s\n",
 				__func__, node->name);
-			break;
+			goto end;
 		}
 		new_dev->dev.platform_data = &vfe_common_data;
 		rc = vfe_set_common_data(new_dev);
 		if (rc < 0)
-			break;
+			goto end;
 	}
 
+end:
 	return rc;
 }
 

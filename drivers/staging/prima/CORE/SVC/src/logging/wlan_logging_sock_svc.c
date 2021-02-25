@@ -1936,7 +1936,7 @@ void wlan_process_done_indication(uint8 type, uint32 reason_code)
 
 	if ((type == WLAN_FW_LOGS) && reason_code &&
 				 vos_isFatalEventEnabled() &&
-				 vos_is_wlan_logging_enabled())
+				 vos_is_wlan_logging_enabled() && reason_code != 4105)
 	{
 		if(wlan_is_log_report_in_progress() == TRUE)
 		{
@@ -1962,7 +1962,8 @@ void wlan_process_done_indication(uint8 type, uint32 reason_code)
 				spin_unlock_irqrestore(
 					&gwlan_logging.bug_report_lock,
 					flags);
-				pr_info("%s: Ignoring Fatal event from firmware for reason %d\n",
+				pr_debug_ratelimited(
+					"%s: Ignoring Fatal event from firmware for reason %d\n",
 					__func__, reason_code);
 				return;
 			}

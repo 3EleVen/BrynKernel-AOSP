@@ -581,7 +581,7 @@ static int log_store(int facility, int level,
 	if (ts_nsec > 0)
 		msg->ts_nsec = ts_nsec;
 	else
-		msg->ts_nsec = local_clock();
+		msg->ts_nsec = local_clock() + get_total_sleep_time_nsec();
 	memset(log_dict(msg) + dict_len, 0, pad_len);
 	msg->len = size;
 
@@ -721,6 +721,9 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 	size_t len = iov_iter_count(from);
 	ssize_t ret = len;
 
+	/* Don't allow userspace to write to /dev/kmesg */
+	return len;
+
 	if (!user || len > LOG_LINE_MAX)
 		return -EINVAL;
 
@@ -755,10 +758,6 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 	 */
 	line = buf;
 	if (line[0] == '<') {
-		if (memcmp(line+3, "batteryd", sizeof("batteryd")-1) == 0 ||
-			   memcmp(line+3, "healthd", sizeof("healthd")-1) == 0)
-			goto ignore;
-		{
 		char *endp = NULL;
 		unsigned int u;
 
@@ -771,11 +770,14 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 			len -= endp - line;
 			line = endp;
 		}
-		}
+	}
+
+	if (strncmp("healthd", line, 7) == 0) {
+		kfree(buf);
+		return len;
 	}
 
 	printk_emit(facility, level, NULL, 0, "%s", line);
-ignore:
 	kfree(buf);
 	return ret;
 }
@@ -1660,7 +1662,7 @@ static bool cont_add(int facility, int level, enum log_flags flags, const char *
 		cont.facility = facility;
 		cont.level = level;
 		cont.owner = current;
-		cont.ts_nsec = local_clock();
+		cont.ts_nsec = local_clock() + get_total_sleep_time_nsec();
 		cont.flags = flags;
 		cont.cons = 0;
 		cont.flushed = false;
@@ -2129,7 +2131,6 @@ void suspend_console(void)
 {
 	if (!console_suspend_enabled)
 		return;
-	printk("Suspending console(s) (use no_console_suspend to debug)\n");
 	console_lock();
 	console_suspended = 1;
 	up_console_sem();

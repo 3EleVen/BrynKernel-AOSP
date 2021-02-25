@@ -4,7 +4,7 @@ menu "IO Schedulers"
 
 config IOSCHED_NOOP
 	bool
-	default n
+	default y
 	---help---
 	  The no-op I/O scheduler is a minimal scheduler that does basic merging
 	  and sorting. Its main uses include non-disk based block devices like
@@ -14,7 +14,7 @@ config IOSCHED_NOOP
 
 config IOSCHED_DEADLINE
 	tristate "Deadline I/O scheduler"
-	default n
+	default y
 	---help---
 	  The deadline I/O scheduler is simple and compact. It will provide
 	  CSCAN service with FIFO expiration of requests, switching to
@@ -23,7 +23,7 @@ config IOSCHED_DEADLINE
 
 config IOSCHED_CFQ
 	tristate "CFQ I/O scheduler"
-	default n
+	default y
 	---help---
 	  The CFQ I/O scheduler tries to distribute bandwidth equally
 	  among all processes in the system. It should provide a fair
@@ -32,15 +32,6 @@ config IOSCHED_CFQ
 
 	  This is the default I/O scheduler.
 
-config IOSCHED_ANXIETY
-	tristate "Anxiety I/O scheduler"
-	default n
-	---help---
-	  The Anxiety I/O scheduler prioritizes latency over everything
-	  else. It uses a simple algorithm that selects from FIFO queues
-	  implemented as doubly linked lists and prioritizes reads over
-	  writes.
-
 config CFQ_GROUP_IOSCHED
 	bool "CFQ Group Scheduling support"
 	depends on IOSCHED_CFQ && BLK_CGROUP
@@ -48,20 +39,31 @@ config CFQ_GROUP_IOSCHED
 	---help---
 	  Enable group IO scheduling in CFQ.
 
-config IOSCHED_ZEN
-	tristate "Zen I/O scheduler"
-	default y
+config IOSCHED_BFQ
+	tristate "BFQ I/O scheduler"
+	default n
 	---help---
-	  FCFS, dispatches are back-inserted, deadlines ensure fairness.
-	  Should work best with devices where there is no travel delay.
+	The BFQ I/O scheduler distributes bandwidth among all
+	processes according to their weights, regardless of the
+	device parameters and with any workload. It also guarantees
+	a low latency to interactive and soft real-time applications.
+	Details in Documentation/block/bfq-iosched.txt
 
-config IOSCHED_ROW
-	tristate "ROW I/O scheduler"
-	default y
+config BFQ_GROUP_IOSCHED
+	bool "BFQ hierarchical scheduling support"
+	depends on IOSCHED_BFQ && BLK_CGROUP
+	default n
+	---help---
+
+	Enable hierarchical scheduling in BFQ, using the blkio
+	(cgroups-v1) or io (cgroups-v2) controller.
+
+config BFQ_EXPORT_WEIGHTS
+	def_bool y if IOSCHED_BFQ && BROKEN
 
 choice
 	prompt "Default I/O scheduler"
-	default DEFAULT_TRIPNDROID
+	default DEFAULT_CFQ
 	help
 	  Select the I/O scheduler which will be used by default for all
 	  block devices.
@@ -72,28 +74,27 @@ choice
 	config DEFAULT_CFQ
 		bool "CFQ" if IOSCHED_CFQ=y
 
+	config DEFAULT_BFQ
+		bool "BFQ" if IOSCHED_BFQ=y
+		help
+		  Selects BFQ as the default I/O scheduler which will be
+		  used by default for all block devices.
+		  The BFQ I/O scheduler aims at distributing the bandwidth
+		  as desired, independently of the disk parameters and with
+		  any workload. It also tries to guarantee low latency to
+		  interactive and soft real-time applications.
+
 	config DEFAULT_NOOP
 		bool "No-op"
-
-	config DEFAULT_ANXIETY
-		bool "Anxiety" if IOSCHED_ANXIETY=y
-
-	config DEFAULT_ZEN
-		bool "ZEN" if IOSCHED_ZEN=y
-
-	config DEFAULT_ROW
-		bool "ROW" if IOSCHED_ROW=y
 
 endchoice
 
 config DEFAULT_IOSCHED
 	string
 	default "deadline" if DEFAULT_DEADLINE
-	default "anxiety" if DEFAULT_ANXIETY
 	default "cfq" if DEFAULT_CFQ
+	default "bfq" if DEFAULT_BFQ
 	default "noop" if DEFAULT_NOOP
-	default "zen" if DEFAULT_ZEN
-	default "row" if DEFAULT_ROW
 
 endmenu
 

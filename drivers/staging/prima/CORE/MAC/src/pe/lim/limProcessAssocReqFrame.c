@@ -1550,7 +1550,7 @@ limProcessAssocReqFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,
                 akm_type = lim_translate_rsn_oui_to_akm_type(
                                     Dot11fIERSN.akm_suite[0]);
 
-                if (akm_type == ANI_AKM_TYPE_OWE) {
+                if (akm_type == ANI_AKM_TYPE_SAE) {
                     if (eSIR_SUCCESS != (status =
                         lim_check_sae_pmf_cap(psessionEntry, &Dot11fIERSN))) {
                         /* Reject pmf disable SAE STA */
@@ -1864,7 +1864,7 @@ void limSendMlmAssocInd(tpAniSirGlobal pMac, tpDphHashNode pStaDs, tpPESession p
                     pMlmAssocInd->chan_info.info = MODE_11AC_VHT40;
                 } else
                     pMlmAssocInd->chan_info.info = MODE_11AC_VHT20;
-                    pMlmAssocInd->VHTCaps = pAssocReq->VHTCaps;
+                pMlmAssocInd->VHTCaps = pAssocReq->VHTCaps;
             } else if (psessionEntry->htCapability &&
                                 pAssocReq->HTCaps.present) {
                 if ((psessionEntry->vhtTxChannelWidthSet ==

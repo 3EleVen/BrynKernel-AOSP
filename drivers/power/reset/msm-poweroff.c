@@ -1,5 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -65,10 +64,23 @@ static bool force_warm_reboot;
  * There is no API from TZ to re-enable the registers.
  * So the SDI cannot be re-enabled when it already by-passed.
  */
-int download_mode = 1;
+static int download_mode = 1;
 #else
-static const int download_mode = 1;
+static const int download_mode;
 #endif
+
+static int in_panic;
+
+static int panic_prep_restart(struct notifier_block *this,
+			      unsigned long event, void *ptr)
+{
+	in_panic = 1;
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block panic_blk = {
+	.notifier_call	= panic_prep_restart,
+};
 
 #ifdef CONFIG_QCOM_DLOAD_MODE
 #define EDL_MODE_PROP "qcom,msm-imem-emergency_download_mode"
@@ -77,7 +89,6 @@ static const int download_mode = 1;
 #define KASLR_OFFSET_PROP "qcom,msm-imem-kaslr_offset"
 #endif
 
-int in_panic;
 static int dload_type = SCM_DLOAD_FULLDUMP;
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
@@ -106,17 +117,6 @@ struct reset_attribute {
 
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
-
-static int panic_prep_restart(struct notifier_block *this,
-			      unsigned long event, void *ptr)
-{
-	in_panic = 1;
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block panic_blk = {
-	.notifier_call	= panic_prep_restart,
-};
 
 static int scm_set_dload_mode(int arg1, int arg2)
 {
@@ -296,35 +296,34 @@ static void msm_restart_prepare(const char *cmd)
 	if (qpnp_pon_check_hard_reset_stored()) {
 		/* Set warm reset as true when device is in dload mode */
 		if (get_dload_mode() ||
-			in_panic ||
 			((cmd != NULL && cmd[0] != '\0') &&
 			!strcmp(cmd, "edl")))
 			need_warm_reset = true;
 	} else {
 		need_warm_reset = (get_dload_mode() ||
-				in_panic ||
 				(cmd != NULL && cmd[0] != '\0'));
 	}
 
+#ifdef CONFIG_QCOM_PRESERVE_MEM
+	need_warm_reset = true;
+#endif
+
+	if (force_warm_reboot)
+		pr_info("Forcing a warm reset of the system\n");
+
+	need_warm_reset = true;
+
 	/* Hard reset the PMIC unless memory contents must be maintained. */
-	if (need_warm_reset)
+	if (force_warm_reboot || need_warm_reset)
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 	else
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
 
-// xuke @ 20180611	Import pstore patch from XiaoMi.	Begin
-	if (in_panic) {
-#ifdef CONFIG_BOOT_INFO
-		qpnp_pon_set_restart_reason(PON_RESTART_REASON_PANIC);
-#endif
-		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
-	} else if (cmd != NULL) {
+	if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_BOOTLOADER);
-			pr_err("jl bootloader step 1\n");
 			__raw_writel(0x77665500, restart_reason);
-			pr_err("jl bootloader step 2\n");
 		} else if (!strncmp(cmd, "recovery", 8)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RECOVERY);
@@ -371,22 +370,10 @@ static void msm_restart_prepare(const char *cmd)
 					     restart_reason);
 			}
 		} else if (!strncmp(cmd, "edl", 3)) {
-			if (0) {
-				enable_emergency_dload_mode();
-			} else {
-				pr_info("This command already been disabled");
-			}
+			enable_emergency_dload_mode();
 		} else {
-#ifdef CONFIG_BOOT_INFO
-			qpnp_pon_set_restart_reason(PON_RESTART_REASON_NORMAL);
-#endif
 			__raw_writel(0x77665501, restart_reason);
 		}
-#ifdef CONFIG_BOOT_INFO
-	} else {
-			qpnp_pon_set_restart_reason(PON_RESTART_REASON_NORMAL);
-			__raw_writel(0x77665501, restart_reason);
-#endif
 	}
 
 	flush_cache_all();
@@ -450,8 +437,6 @@ static void do_msm_poweroff(void)
 	pr_notice("Powering off the SoC\n");
 
 	set_dload_mode(0);
-	qpnp_pon_set_restart_reason(PON_RESTART_REASON_UNKNOWN);
-	__raw_writel(0x0, restart_reason);
 	scm_disable_sdi();
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
 
@@ -602,11 +587,12 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret = 0;
 
+	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
+
 #ifdef CONFIG_QCOM_DLOAD_MODE
 	if (scm_is_call_available(SCM_SVC_BOOT, SCM_DLOAD_CMD) > 0)
 		scm_dload_supported = true;
 
-	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
 	np = of_find_compatible_node(NULL, NULL, DL_MODE_PROP);
 	if (!np) {
 		pr_err("unable to find DT imem DLOAD mode node\n");
@@ -697,9 +683,6 @@ skip_sysfs_create:
 	if (mem)
 		tcsr_boot_misc_detect = mem->start;
 
-	//initial restart reason is other
-	qpnp_pon_set_restart_reason(PON_RESTART_REASON_UNKNOWN);
-	__raw_writel(0x77665506, restart_reason);
 	pm_power_off = do_msm_poweroff;
 	arm_pm_restart = do_msm_restart;
 
@@ -712,6 +695,9 @@ skip_sysfs_create:
 	set_dload_mode(download_mode);
 	if (!download_mode)
 		scm_disable_sdi();
+
+	force_warm_reboot = of_property_read_bool(dev->of_node,
+						"qcom,force-warm-reboot");
 
 	return 0;
 

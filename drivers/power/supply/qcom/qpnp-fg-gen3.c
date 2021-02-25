@@ -1245,7 +1245,7 @@ static int fg_awake_cb(struct votable *votable, void *data, int awake,
 	struct fg_chip *chip = data;
 
 	if (awake)
-		pm_stay_awake(chip->dev);
+		pm_wakeup_event(chip->dev, 500);
 	else
 		pm_relax(chip->dev);
 
@@ -1883,7 +1883,9 @@ static int fg_charge_full_update(struct fg_chip *chip)
 		msoc, bsoc, chip->health, chip->charge_status,
 		chip->charge_full);
 	if (chip->charge_done && !chip->charge_full) {
-		if (msoc >= 99 && chip->health == POWER_SUPPLY_HEALTH_GOOD) {
+		if (msoc >= 99 && (chip->health == POWER_SUPPLY_HEALTH_GOOD
+				|| chip->health == POWER_SUPPLY_HEALTH_COOL
+				|| chip->health == POWER_SUPPLY_HEALTH_WARM)) {
 			fg_dbg(chip, FG_STATUS, "Setting charge_full to true\n");
 			chip->charge_full = true;
 			/*
@@ -2631,7 +2633,7 @@ static void fg_ttf_update(struct fg_chip *chip)
 	chip->ttf.last_ttf = 0;
 	chip->ttf.last_ms = 0;
 	mutex_unlock(&chip->ttf.lock);
-	queue_delayed_work(system_power_efficient_wq, &chip->ttf_work, msecs_to_jiffies(delay_ms));
+	schedule_delayed_work(&chip->ttf_work, msecs_to_jiffies(delay_ms));
 }
 
 static void restore_cycle_counter(struct fg_chip *chip)
@@ -2669,9 +2671,7 @@ static void clear_cycle_counter(struct fg_chip *chip)
 		chip->cyc_ctr.last_soc[i] = 0;
 	}
 	rc = fg_sram_write(chip, CYCLE_COUNT_WORD, CYCLE_COUNT_OFFSET,
-			(u8 *)&chip->cyc_ctr.count,
-			sizeof(chip->cyc_ctr.count) / (sizeof(u8 *)),
-			FG_IMA_DEFAULT);
+			(u8 *)&chip->cyc_ctr.count, sizeof(chip->cyc_ctr.count), FG_IMA_DEFAULT);
 	if (rc < 0)
 		pr_err("failed to clear cycle counter rc=%d\n", rc);
 
@@ -3369,7 +3369,7 @@ static void sram_dump_work(struct work_struct *work)
 	fg_dbg(chip, FG_STATUS, "SRAM Dump done at %lld.%d\n",
 		quotient, remainder);
 resched:
-	queue_delayed_work(system_power_efficient_wq, &chip->sram_dump_work,
+	schedule_delayed_work(&chip->sram_dump_work,
 			msecs_to_jiffies(fg_sram_dump_period_ms));
 }
 
@@ -3397,7 +3397,7 @@ static int fg_sram_dump_sysfs(const char *val, const struct kernel_param *kp)
 
 	chip = power_supply_get_drvdata(bms_psy);
 	if (fg_sram_dump)
-		queue_delayed_work(system_power_efficient_wq, &chip->sram_dump_work,
+		schedule_delayed_work(&chip->sram_dump_work,
 				msecs_to_jiffies(fg_sram_dump_period_ms));
 	else
 		cancel_delayed_work_sync(&chip->sram_dump_work);
@@ -3966,7 +3966,7 @@ static void ttf_work(struct work_struct *work)
 		/* keep the wake lock and prime the IBATT and VBATT buffers */
 		if (ttf < 0) {
 			/* delay for one FG cycle */
-			queue_delayed_work(system_power_efficient_wq, &chip->ttf_work,
+			schedule_delayed_work(&chip->ttf_work,
 							msecs_to_jiffies(1500));
 			mutex_unlock(&chip->ttf.lock);
 			return;
@@ -3983,7 +3983,7 @@ static void ttf_work(struct work_struct *work)
 	}
 
 	/* recurse every 10 seconds */
-	queue_delayed_work(system_power_efficient_wq, &chip->ttf_work, msecs_to_jiffies(10000));
+	schedule_delayed_work(&chip->ttf_work, msecs_to_jiffies(10000));
 end_work:
 	vote(chip->awake_votable, TTF_PRIMING, false, 0);
 	mutex_unlock(&chip->ttf.lock);
@@ -4016,15 +4016,6 @@ static int fg_psy_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
 		rc = fg_get_battery_temp(chip, &pval->intval);
-		break;
-	case POWER_SUPPLY_PROP_BATTERY_HEALTH:
-		if (chip->use_external_fg && external_fg
-				&& external_fg->get_batt_health)
-			pval->intval = external_fg->get_batt_health();
-		else if (get_extern_fg_regist_done() == false)
-			pval->intval = -1;
-		else
-			pval->intval = -1;
 		break;
 	case POWER_SUPPLY_PROP_COLD_TEMP:
 		rc = fg_get_jeita_threshold(chip, JEITA_COLD, &pval->intval);
@@ -4333,9 +4324,6 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_CC_STEP,
 	POWER_SUPPLY_PROP_CC_STEP_SEL,
 	POWER_SUPPLY_PROP_REAL_CAPACITY,
-	POWER_SUPPLY_PROP_SET_ALLOW_READ_EXTERN_FG_IIC,
-	POWER_SUPPLY_PROP_BQ_SOC,
-	POWER_SUPPLY_PROP_BATTERY_HEALTH,
 };
 
 static const struct power_supply_desc fg_psy_desc = {
@@ -4787,7 +4775,7 @@ static irqreturn_t fg_batt_missing_irq_handler(int irq, void *data)
 	}
 
 	clear_battery_profile(chip);
-	queue_delayed_work(system_power_efficient_wq, &chip->profile_load_work, 0);
+	schedule_delayed_work(&chip->profile_load_work, 0);
 
 	if (chip->fg_psy)
 		power_supply_changed(chip->fg_psy);
@@ -5914,7 +5902,7 @@ static int fg_gen3_probe(struct platform_device *pdev)
 	}
 
 	device_init_wakeup(chip->dev, true);
-	queue_delayed_work(system_power_efficient_wq, &chip->profile_load_work, 0);
+	schedule_delayed_work(&chip->profile_load_work, 0);
 
 	pr_debug("FG GEN3 driver probed successfully\n");
 	return 0;
@@ -5951,9 +5939,9 @@ static int fg_gen3_resume(struct device *dev)
 	if (rc < 0)
 		pr_err("Error in configuring ESR timer, rc=%d\n", rc);
 
-	queue_delayed_work(system_power_efficient_wq, &chip->ttf_work, 0);
+	schedule_delayed_work(&chip->ttf_work, 0);
 	if (fg_sram_dump)
-		queue_delayed_work(system_power_efficient_wq, &chip->sram_dump_work,
+		schedule_delayed_work(&chip->sram_dump_work,
 				msecs_to_jiffies(fg_sram_dump_period_ms));
 
 	if (!work_pending(&chip->status_change_work)) {

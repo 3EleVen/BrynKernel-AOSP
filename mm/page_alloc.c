@@ -5,7 +5,6 @@
  *  Note that kmalloc() lives in slab.c
  *
  *  Copyright (C) 1991, 1992, 1993, 1994  Linus Torvalds
- *  Copyright (C) 2020 XiaoMi, Inc.
  *  Swap reorganised 29.12.95, Stephen Tweedie
  *  Support of BIGMEM added by Gerhard Wichert, Siemens AG, July 1999
  *  Reshaped it to be a zoned allocator, Ingo Molnar, Red Hat, 1999
@@ -66,13 +65,15 @@
 #include <linux/kthread.h>
 #include <linux/memcontrol.h>
 #include <linux/show_mem_notifier.h>
-#include <linux/psi.h>
 #include <linux/khugepaged.h>
+#include <linux/psi.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
 #include "internal.h"
+
+atomic_long_t kswapd_waiters = ATOMIC_LONG_INIT(0);
 
 /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
 static DEFINE_MUTEX(pcp_batch_high_lock);
@@ -1966,8 +1967,7 @@ static void change_pageblock_range(struct page *pageblock_page,
  * is worse than movable allocations stealing from unmovable and reclaimable
  * pageblocks.
  */
-static bool can_steal_fallback(unsigned int order, int start_mt, int fallback_type,
-								unsigned int start_order)
+static bool can_steal_fallback(unsigned int order, int start_mt)
 {
 	/*
 	 * Leaving this order check is intended, although there is
@@ -1979,15 +1979,10 @@ static bool can_steal_fallback(unsigned int order, int start_mt, int fallback_ty
 	if (order >= pageblock_order)
 		return true;
 
-	/* don't let unmovable allocations cause migrations simply because of free pages */
-	if ((start_mt != MIGRATE_UNMOVABLE && order >= pageblock_order / 2) ||
-	/* only steal reclaimable page blocks for unmovable allocations */
-	(start_mt == MIGRATE_UNMOVABLE && fallback_type != MIGRATE_MOVABLE && order >= pageblock_order / 2) ||
-	/* reclaimable can steal aggressively */
-	start_mt == MIGRATE_RECLAIMABLE ||
-	/* allow unmovable allocs up to 64K without migrating blocks */
-	(start_mt == MIGRATE_UNMOVABLE && start_order >= 5) ||
-	page_group_by_mobility_disabled)
+	if (order >= pageblock_order / 2 ||
+		start_mt == MIGRATE_RECLAIMABLE ||
+		start_mt == MIGRATE_UNMOVABLE ||
+		page_group_by_mobility_disabled)
 		return true;
 
 	return false;
@@ -2027,7 +2022,7 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
  * fragmentation due to mixed migratetype pages in one pageblock.
  */
 int find_suitable_fallback(struct free_area *area, unsigned int order,
-			int migratetype, bool only_stealable, bool *can_steal, unsigned int start_order)
+			int migratetype, bool only_stealable, bool *can_steal)
 {
 	int i;
 	int fallback_mt;
@@ -2044,7 +2039,7 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 		if (list_empty(&area->free_list[fallback_mt]))
 			continue;
 
-		if (can_steal_fallback(order, migratetype, fallback_mt, start_order))
+		if (can_steal_fallback(order, migratetype))
 			*can_steal = true;
 
 		if (!only_stealable)
@@ -2193,7 +2188,7 @@ __rmqueue_fallback(struct zone *zone, unsigned int order, int start_migratetype)
 				--current_order) {
 		area = &(zone->free_area[current_order]);
 		fallback_mt = find_suitable_fallback(area, current_order,
-				start_migratetype, false, &can_steal, order);
+				start_migratetype, false, &can_steal);
 		if (fallback_mt == -1)
 			continue;
 
@@ -3690,7 +3685,6 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	int compaction_retries;
 	int no_progress_loops;
 	unsigned int cpuset_mems_cookie;
-	pg_data_t *pgdat = ac->preferred_zoneref->zone->zone_pgdat;
 	bool woke_kswapd = false;
 
 	/*
@@ -3738,7 +3732,7 @@ retry_cpuset:
 
 	if (gfp_mask & __GFP_KSWAPD_RECLAIM) {
 		if (!woke_kswapd) {
-			atomic_inc(&pgdat->kswapd_waiters);
+			atomic_long_inc(&kswapd_waiters);
 			woke_kswapd = true;
 		}
 		wake_all_kswapds(order, ac);
@@ -3918,7 +3912,7 @@ nopage:
 
 got_pg:
 	if (woke_kswapd)
-		atomic_dec(&pgdat->kswapd_waiters);
+		atomic_long_dec(&kswapd_waiters);
 	if (!page)
 		warn_alloc(gfp_mask,
 				"page allocation failure: order:%u", order);
@@ -5981,7 +5975,6 @@ static void __paginginit free_area_init_core(struct pglist_data *pgdat)
 	pgdat_page_ext_init(pgdat);
 	spin_lock_init(&pgdat->lru_lock);
 	lruvec_init(node_lruvec(pgdat));
-	pgdat->kswapd_waiters = (atomic_t)ATOMIC_INIT(0);
 
 	for (j = 0; j < MAX_NR_ZONES; j++) {
 		struct zone *zone = pgdat->node_zones + j;
@@ -7440,6 +7433,7 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 		.zone = page_zone(pfn_to_page(start)),
 		.mode = MIGRATE_SYNC,
 		.ignore_skip_hint = true,
+		.gfp_mask = GFP_KERNEL,
 	};
 	INIT_LIST_HEAD(&cc.migratepages);
 
@@ -7535,8 +7529,6 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 	/* Make sure the range is really isolated. */
 	ret = test_pages_isolated(outer_start, end, false);
 	if (ret) {
-		pr_info_ratelimited("%s: [%lx, %lx) PFNs busy\n",
-			__func__, outer_start, end);
 		goto done;
 	}
 

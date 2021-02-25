@@ -887,7 +887,7 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 	rq->clock_task += delta;
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) || defined(CONFIG_PARAVIRT_TIME_ACCOUNTING)
-	if ((irq_delta + steal) && !!sched_feat(NONTASK_CAPACITY))
+	if ((irq_delta + steal) && sched_feat(NONTASK_CAPACITY))
 		sched_rt_avg_update(rq, irq_delta + steal);
 #endif
 }
@@ -3672,6 +3672,8 @@ static void __sched notrace __schedule(bool preempt)
 		rq->nr_switches++;
 		rq->curr = next;
 		++*switch_count;
+
+		psi_sched_switch(prev, next, !task_on_rq_queued(prev));
 
 		trace_sched_switch(preempt, prev, next);
 		rq = context_switch(rq, prev, next, &rf); /* unlocks the rq */
@@ -6542,7 +6544,7 @@ static int init_rootdomain(struct root_domain *rd)
 		goto free_dlo_mask;
 
 	if (cpupri_init(&rd->cpupri) != 0)
-		goto free_cpudl;
+		goto free_rto_mask;
 
 	init_max_cpu_capacity(&rd->max_cpu_capacity);
 
@@ -6550,10 +6552,8 @@ static int init_rootdomain(struct root_domain *rd)
 
 	return 0;
 
-free_cpudl:
-	cpudl_cleanup(&rd->cpudl);
-//free_rto_mask:
-//	free_cpumask_var(rd->rto_mask);
+free_rto_mask:
+	free_cpumask_var(rd->rto_mask);
 free_dlo_mask:
 	free_cpumask_var(rd->dlo_mask);
 free_online:
@@ -7244,7 +7244,7 @@ sd_init(struct sched_domain_topology_level *tl,
 	*sd = (struct sched_domain){
 		.min_interval		= sd_weight,
 		.max_interval		= 2*sd_weight,
-		.busy_factor		= 1,
+		.busy_factor		= 32,
 		.imbalance_pct		= 125,
 
 		.cache_nice_tries	= 0,
@@ -7824,6 +7824,17 @@ static int build_sched_domains(const struct cpumask *cpu_map,
 	/* Attach the domains */
 	rcu_read_lock();
 	for_each_cpu(i, cpu_map) {
+		int max_cpu = READ_ONCE(d.rd->max_cap_orig_cpu);
+		int min_cpu = READ_ONCE(d.rd->min_cap_orig_cpu);
+
+		if ((max_cpu < 0) || (arch_scale_cpu_capacity(NULL, i) >
+				arch_scale_cpu_capacity(NULL, max_cpu)))
+			WRITE_ONCE(d.rd->max_cap_orig_cpu, i);
+
+		if ((min_cpu < 0) || (arch_scale_cpu_capacity(NULL, i) <
+				arch_scale_cpu_capacity(NULL, min_cpu)))
+			WRITE_ONCE(d.rd->min_cap_orig_cpu, i);
+
 		sd = *per_cpu_ptr(d.sd, i);
 
 		cpu_attach_domain(sd, d.rd, i);

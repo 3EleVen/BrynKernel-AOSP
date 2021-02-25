@@ -1542,7 +1542,6 @@ struct ravg {
 	u32 coloc_demand;
 	u32 sum_history[RAVG_HIST_SIZE_MAX];
 	u32 *curr_window_cpu, *prev_window_cpu;
-	u64 proc_load;
 	u32 curr_window, prev_window;
 	u16 active_windows;
 	u32 pred_demand;
@@ -1829,6 +1828,10 @@ struct task_struct {
 #ifdef CONFIG_CGROUPS
 	/* disallow userland-initiated cgroup migration */
 	unsigned no_cgroup_migration:1;
+#endif
+#ifdef CONFIG_PSI
+	/* Stalled due to lack of memory */
+	unsigned			in_memstall:1;
 #endif
 
 	unsigned long atomic_flags; /* Flags needing atomic access. */
@@ -3983,9 +3986,3 @@ void cpufreq_remove_update_util_hook(int cpu);
 extern DEFINE_PER_CPU_READ_MOSTLY(int, sched_load_boost);
 
 #endif
-
-#ifdef CONFIG_DYNAMIC_STUNE_BOOST
-int do_stune_boost(char *st_name, int boost);
-int reset_stune_boost(char *st_name);
-int stune_boost(char *st_name);
-#endif /* CONFIG_DYNAMIC_STUNE_BOOST */

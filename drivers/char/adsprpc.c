@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -51,6 +51,8 @@
 #include <soc/qcom/ramdump.h>
 #include <linux/debugfs.h>
 #include <linux/pm_qos.h>
+#include <linux/cpumask.h>
+
 #define TZ_PIL_PROTECT_MEM_SUBSYS_ID 0x0C
 #define TZ_PIL_CLEAR_PROTECT_MEM_SUBSYS_ID 0x0D
 #define TZ_PIL_AUTH_QDSP6_PROC 1
@@ -192,6 +194,11 @@ struct secure_vm {
 	int vmcount;
 };
 
+struct qos_cores {
+	int *coreno;
+	int corecount;
+};
+
 struct fastrpc_file;
 
 struct fastrpc_buf {
@@ -331,6 +338,7 @@ struct fastrpc_apps {
 	bool secure_flag;
 	spinlock_t ctxlock;
 	struct smq_invoke_ctx *ctxtable[FASTRPC_CTX_MAX];
+	struct qos_cores silvercores;
 };
 
 struct fastrpc_mmap {
@@ -735,7 +743,9 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 	if (!map)
 		return;
 	fl = map->fl;
-	if (fl && !(map->flags == ADSP_MMAP_HEAP_ADDR ||
+	if (!fl)
+		return;
+	if (!(map->flags == ADSP_MMAP_HEAP_ADDR ||
 				map->flags == ADSP_MMAP_REMOTE_HEAP_ADDR)) {
 		cid = fl->cid;
 		VERIFY(err, cid >= ADSP_DOMAIN_ID && cid < NUM_CHANNELS);
@@ -3675,9 +3685,11 @@ bail:
 static int fastrpc_internal_control(struct fastrpc_file *fl,
 					struct fastrpc_ioctl_control *cp)
 {
-	struct fastrpc_apps *me = &gfa;
 	int err = 0;
 	int latency;
+	cpumask_t mask;
+	struct fastrpc_apps *me = &gfa;
+	u32 len = me->silvercores.corecount, i = 0;
 
 	VERIFY(err, !IS_ERR_OR_NULL(fl) && !IS_ERR_OR_NULL(fl->apps));
 	if (err)
@@ -3693,6 +3705,12 @@ static int fastrpc_internal_control(struct fastrpc_file *fl,
 		VERIFY(err, latency != 0);
 		if (err)
 			goto bail;
+		cpumask_clear(&mask);
+		for (i = 0; i < len; i++)
+			cpumask_set_cpu(me->silvercores.coreno[i], &mask);
+		fl->pm_qos_req.type = PM_QOS_REQ_AFFINE_CORES;
+		cpumask_copy(&fl->pm_qos_req.cpus_affine, &mask);
+
 		if (!fl->qos_request) {
 			pm_qos_add_request(&fl->pm_qos_req,
 				PM_QOS_CPU_DMA_LATENCY, latency);
@@ -3738,6 +3756,11 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int ioctl_num,
 	int size = 0, err = 0;
 	uint32_t info;
 
+	VERIFY(err, fl != NULL);
+	if (err) {
+		err = -EBADR;
+		goto bail;
+	}
 	p.inv.fds = NULL;
 	p.inv.attrs = NULL;
 	p.inv.crc = NULL;
@@ -4263,6 +4286,39 @@ bail:
 	}
 }
 
+static void init_qos_cores_list(struct device *dev, char *prop_name,
+						struct qos_cores *silvercores)
+{
+	int err = 0;
+	u32 len = 0, i = 0;
+	u32 *coreslist = NULL;
+
+	if (!of_find_property(dev->of_node, prop_name, &len))
+		goto bail;
+	if (len == 0)
+		goto bail;
+	len /= sizeof(u32);
+	VERIFY(err, NULL != (coreslist = kcalloc(len, sizeof(u32),
+						 GFP_KERNEL)));
+	if (err)
+		goto bail;
+	for (i = 0; i < len; i++) {
+		err = of_property_read_u32_index(dev->of_node, prop_name, i,
+								&coreslist[i]);
+		if (err) {
+			pr_err("adsprpc: %s: failed to read QOS cores list\n",
+								 __func__);
+			goto bail;
+		}
+	}
+	silvercores->coreno = coreslist;
+	silvercores->corecount = len;
+bail:
+	if (err) {
+		kfree(coreslist);
+	}
+}
+
 static void configure_secure_channels(uint32_t secure_domains)
 {
 	struct fastrpc_apps *me = &gfa;
@@ -4298,6 +4354,8 @@ static int fastrpc_probe(struct platform_device *pdev)
 					"qcom,msm-fastrpc-compute")) {
 		init_secure_vmid_list(dev, "qcom,adsp-remoteheap-vmid",
 							&gcinfo[0].rhvm);
+		init_qos_cores_list(dev, "qcom,qos-cores",
+							&me->silvercores);
 
 
 		of_property_read_u32(dev->of_node, "qcom,rpc-latency-us",

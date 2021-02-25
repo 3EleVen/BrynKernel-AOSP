@@ -9,6 +9,15 @@ config QPNP_FG
 	  fuel gauge. The state of charge is reported through a BMS power
 	  supply property and also sends uevents when the capacity is updated.
 
+config QPNP_FG_DEBUG
+	tristate "QPNP fuel gauge debug driver"
+	depends on QPNP_FG
+	help
+	  Say Y here to enable the Fuel Gauge Debug driver. This adds support
+	  for debug battery fuel gauging & state of charge. The state of
+	  charge is reported through a BMS power supply property and also sends
+	  uevents for some cases of debugging.
+
 config QPNP_FG_GEN3
 	tristate "QPNP GEN3 fuel gauge driver"
 	depends on MFD_SPMI_PMIC
@@ -162,14 +171,5 @@ config SMB1390_CHARGE_PUMP
 	  Say Y to include support for SMB1390 Charge Pump.
 	  SMB1390 is a div2 charge pump capable of delivering 6A charge current
 	  with very high efficiency.
-
-config QPNP_QNOVO5
-	bool "QPNP QNOVO5 driver"
-	depends on MFD_SPMI_PMIC
-	help
-	  Say Y here to enable the Qnovo5 PBS-based pulse charging engine.
-	  Qnovo5 driver accepts pulse parameters via sysfs entries and programs
-	  the hardware module. It also allows userspace code to read diagnostics
-	  of voltage and current measured during certain phases of the pulses.
 
 endmenu

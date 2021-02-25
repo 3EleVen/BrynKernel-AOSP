@@ -1,5 +1,4 @@
 /* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -321,10 +320,16 @@ struct device_node *of_batterydata_get_best_profile(
 {
 	struct batt_ids batt_ids;
 	struct device_node *node, *best_node = NULL;
+#ifdef CONFIG_MACH_XIAOMI_C6
+	struct device_node *default_node = NULL;
+#endif
 	const char *battery_type = NULL;
 	int delta = 0, best_delta = 0, best_id_kohm = 0, id_range_pct,
 		i = 0, rc = 0, limit = 0;
 	bool in_range = false;
+#ifdef CONFIG_MACH_XIAOMI_C6
+	int checknum = 0, match = 0;
+#endif
 
 	/* read battery id range percentage for best profile */
 	rc = of_property_read_u32(batterydata_container_node,
@@ -343,8 +348,6 @@ struct device_node *of_batterydata_get_best_profile(
 	 * Find the battery data with a battery id resistor closest to this one
 	 */
 	for_each_child_of_node(batterydata_container_node, node) {
-#if 0
-		batt_type = "3668695_LC_M5100_Coslight_4000mAH_averaged_MasterSlave_Oct30th2018";
 		if (batt_type != NULL) {
 			rc = of_property_read_string(node, "qcom,battery-type",
 							&battery_type);
@@ -354,7 +357,6 @@ struct device_node *of_batterydata_get_best_profile(
 				break;
 			}
 		} else {
-#endif
 			rc = of_batterydata_read_batt_id_kohm(node,
 							"qcom,batt-id-kohm",
 							&batt_ids);
@@ -364,11 +366,19 @@ struct device_node *of_batterydata_get_best_profile(
 				delta = abs(batt_ids.kohm[i] - batt_id_kohm);
 				limit = (batt_ids.kohm[i] * id_range_pct) / 100;
 				in_range = (delta <= limit);
+#ifdef CONFIG_MACH_XIAOMI_C6
+				if (in_range != 0)
+					match = 1;
+#endif
 				/*
 				 * Check if the delta is the lowest one
 				 * and also if the limits are in range
 				 * before selecting the best node.
 				 */
+#ifdef CONFIG_MACH_XIAOMI_C6
+				if (batt_ids.kohm[i] == 82)
+					default_node = node;
+#endif
 				if ((delta < best_delta || !best_node)
 					&& in_range) {
 					best_node = node;
@@ -376,29 +386,28 @@ struct device_node *of_batterydata_get_best_profile(
 					best_id_kohm = batt_ids.kohm[i];
 				}
 			}
-#if 0
 		}
-#endif
 	}
+
+#ifdef CONFIG_MACH_XIAOMI_C6
+	checknum = abs(best_id_kohm - batt_id_kohm);
+	if (match == 0) {
+		best_node = default_node;
+		checknum = 0;
+	}
+#endif
 
 	if (best_node == NULL) {
 		pr_err("No battery data found\n");
-//begin battery id not use unknown battery file longcheer 18.7.31
-		for_each_child_of_node(batterydata_container_node, node) {
-			rc = of_property_read_string(node, "qcom, battery-type", &battery_type);
-			if (!rc && strcmp(battery_type, "unknown-battery") == 0) {
-				best_node = node;
-				break;
-			}
-		}
-		if(best_node)
-			pr_err("use unknown battery data\n");
-//end
 		return best_node;
 	}
 
 	/* check that profile id is in range of the measured batt_id */
+#ifdef CONFIG_MACH_XIAOMI_C6
+	if (checknum >
+#else
 	if (abs(best_id_kohm - batt_id_kohm) >
+#endif
 			((best_id_kohm * id_range_pct) / 100)) {
 		pr_err("out of range: profile id %d batt id %d pct %d",
 			best_id_kohm, batt_id_kohm, id_range_pct);

@@ -303,8 +303,13 @@ CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
 
 HOSTCC       = gcc
 HOSTCXX      = g++
-HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O3 -fomit-frame-pointer -std=gnu89
-HOSTCXXFLAGS = -O3
+HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89
+HOSTCXXFLAGS = -O2
+
+ifeq ($(shell $(HOSTCC) -v 2>&1 | grep -c "clang version"), 1)
+HOSTCFLAGS  += -Wno-unused-value -Wno-unused-parameter \
+		-Wno-missing-field-initializers
+endif
 
 # Decide whether to build built-in, modular, or both.
 # Normally, just do built-in.
@@ -339,7 +344,7 @@ include scripts/Kbuild.include
 # Make variables (CC, etc...)
 AS		= $(CROSS_COMPILE)as
 LD		= $(CROSS_COMPILE)ld
-CC		= $(CROSS_COMPILE)gcc
+REAL_CC		= $(CROSS_COMPILE)gcc
 LDGOLD		= $(CROSS_COMPILE)ld.gold
 CPP		= $(CC) -E
 AR		= $(CROSS_COMPILE)ar
@@ -354,6 +359,10 @@ DEPMOD		= depmod
 PERL		= perl
 PYTHON		= python
 CHECK		= sparse
+
+# Use the wrapper for the compiler.  This wrapper scans for new
+# warnings and causes the build to stop upon encountering them
+CC		= $(PYTHON) $(srctree)/scripts/gcc-wrapper.py $(REAL_CC)
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
@@ -516,42 +525,10 @@ endif
 ifneq ($(GCC_TOOLCHAIN),)
 CLANG_FLAGS	+= --gcc-toolchain=$(GCC_TOOLCHAIN)
 endif
-KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-variable)
-KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
-KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
-KBUILD_CFLAGS += $(call cc-disable-warning, address-of-packed-member)
-KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
-KBUILD_CFLAGS += $(call cc-disable-warning, undefined-optimized)
-KBUILD_CFLAGS += $(call cc-disable-warning, tautological-constant-out-of-range-compare)
-KBUILD_CFLAGS += $(call cc-option, -Wno-sometimes-uninitialized)
-KBUILD_CFLAGS += -Wno-asm-operand-widths
-KBUILD_CFLAGS += -Wno-initializer-overrides
-KBUILD_CFLAGS += -fno-builtin
-KBUILD_CFLAGS += $(call cc-disable-warning, undefined-optimized)
-KBUILD_CFLAGS += $(call cc-disable-warning, tautological-constant-out-of-range-compare)
-
-# Quiet clang warning: comparison of unsigned expression < 0 is always false
-
-KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
-# CLANG uses a _MergedGlobals as optimization, but this breaks modpost, as the
-# source of a reference will be _MergedGlobals and not on of the whitelisted names.
-# See modpost pattern 2
-KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
-KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
 CLANG_FLAGS	+= -no-integrated-as
 CLANG_FLAGS	+= -Werror=unknown-warning-option
-CLANG_FLAGS	+= $(call cc-option, -Wno-misleading-indentation)
-CLANG_FLAGS	+= $(call cc-option, -Wno-bool-operation)
 KBUILD_CFLAGS	+= $(CLANG_FLAGS)
 KBUILD_AFLAGS	+= $(CLANG_FLAGS)
-else
-
-KBUILD_CFLAGS += $(call cc-option,-fno-delete-null-pointer-checks,)
-# These warnings generated too much noise in a regular build.
-# Use make W=1 to enable them (see scripts/Makefile.build)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
 endif
 
 
@@ -664,21 +641,6 @@ endif
 # Defaults to vmlinux, but the arch makefile usually adds further targets
 all: vmlinux
 
-ifeq ($(cc-name),clang)
-ifneq ($(CROSS_COMPILE),)
-CLANG_TRIPLE    ?= $(CROSS_COMPILE)
-CLANG_TARGET	:= --target=$(notdir $(CLANG_TRIPLE:%-=%))
-GCC_TOOLCHAIN	:= $(realpath $(dir $(shell which $(LD)))/..)
-endif
-ifneq ($(GCC_TOOLCHAIN),)
-CLANG_GCC_TC	:= --gcc-toolchain=$(GCC_TOOLCHAIN)
-endif
-KBUILD_CFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC)
-KBUILD_AFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC)
-KBUILD_CFLAGS += $(call cc-option, -no-integrated-as)
-KBUILD_AFLAGS += $(call cc-option, -no-integrated-as)
-endif
-
 KBUILD_CFLAGS	+= $(call cc-option,-fno-PIE)
 KBUILD_AFLAGS	+= $(call cc-option,-fno-PIE)
 CFLAGS_GCOV	:= -fprofile-arcs -ftest-coverage \
@@ -715,7 +677,6 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, format-overflow)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, int-in-bool-context)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, address-of-packed-member)
 KBUILD_CFLAGS	+= $(call cc-disable-warning, attribute-alias)
-KBUILD_CFLAGS	+= $(call cc-disable-warning, misleading-indentation)
 
 ifdef CONFIG_LD_DEAD_CODE_DATA_ELIMINATION
 KBUILD_CFLAGS	+= $(call cc-option,-ffunction-sections,)
@@ -772,7 +733,15 @@ endif
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS   += -Os
 else
+ifeq ($(cc-name),clang)
 KBUILD_CFLAGS   += -O3
+else
+KBUILD_CFLAGS   += -O2
+endif
+endif
+
+ifdef CONFIG_CC_WERROR
+KBUILD_CFLAGS	+= -Werror
 endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
@@ -825,17 +794,16 @@ KBUILD_CFLAGS += $(stackp-flag)
 
 ifeq ($(cc-name),clang)
 KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-variable)
 KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
 KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
-KBUILD_CFLAGS += $(call cc-disable-warning, address-of-packed-member)
 KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
-KBUILD_CFLAGS += $(call cc-option, -Wno-string-concatenation)
-KBUILD_CFLAGS += $(call cc-disable-warning, pointer-bool-conversion)
 KBUILD_CFLAGS += $(call cc-option, -Wno-undefined-optimized)
 KBUILD_CFLAGS += $(call cc-option, -Wno-tautological-constant-out-of-range-compare)
 KBUILD_CFLAGS += $(call cc-option, -Wno-sometimes-uninitialized)
 KBUILD_CFLAGS += -Wno-asm-operand-widths
 KBUILD_CFLAGS += -Wno-initializer-overrides
+
 # Quiet clang warning: comparison of unsigned expression < 0 is always false
 KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
 # CLANG uses a _MergedGlobals as optimization, but this breaks modpost, as the
@@ -843,17 +811,10 @@ KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
 # See modpost pattern 2
 KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
 KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
-KBUILD_CFLAGS += $(call cc-option, -mllvm -polly) \
-		 $(call cc-option, -mllvm -polly-run-dce) \
-		 $(call cc-option, -mllvm -polly-run-inliner) \
-		 $(call cc-option, -mllvm -polly-opt-fusion=max) \
-		 $(call cc-option, -mllvm -polly-ast-use-context) \
-		 $(call cc-option, -mllvm -polly-detect-keep-going) \
-		 $(call cc-option, -mllvm -polly-vectorizer=stripmine)
 else
 
 # These warnings generated too much noise in a regular build.
-# Use make W=1 to enable them (see scripts/Makefile.build)
+# Use make W=1 to enable them (see scripts/Makefile.extrawarn)
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
 endif
 
@@ -1285,12 +1246,17 @@ endif
 # needs to be updated, so this check is forced on all builds
 
 uts_len := 64
+ifneq (,$(BUILD_NUMBER))
+	UTS_RELEASE=$(KERNELRELEASE)-ab$(BUILD_NUMBER)
+else
+	UTS_RELEASE=$(KERNELRELEASE)
+endif
 define filechk_utsrelease.h
-	if [ `echo -n "$(KERNELRELEASE)" | wc -c ` -gt $(uts_len) ]; then \
-	  echo '"$(KERNELRELEASE)" exceeds $(uts_len) characters' >&2;    \
-	  exit 1;                                                         \
-	fi;                                                               \
-	(echo \#define UTS_RELEASE \"$(KERNELRELEASE)\";)
+	if [ `echo -n "$(UTS_RELEASE)" | wc -c ` -gt $(uts_len) ]; then \
+	  echo '"$(UTS_RELEASE)" exceeds $(uts_len) characters' >&2;    \
+	  exit 1;                                                       \
+	fi;                                                             \
+	(echo \#define UTS_RELEASE \"$(UTS_RELEASE)\";)
 endef
 
 define filechk_version.h
