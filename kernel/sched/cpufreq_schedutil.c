@@ -944,8 +944,14 @@ static int sugov_init(struct cpufreq_policy *policy)
 	 * intializing up_rate/down_rate to 0 explicitly in kernel
 	 * since WALT expects so by default.
 	 */
+
+#ifdef CONFIG_SCHED_WALT
 	tunables->up_rate_limit_us = 0;
 	tunables->down_rate_limit_us = 0;
+#else
+	tunables->up_rate_limit_us = 1000;
+	tunables->down_rate_limit_us = 1000;
+#endif
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->hispeed_freq = 0;
 
