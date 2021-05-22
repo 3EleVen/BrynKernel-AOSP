@@ -62,6 +62,17 @@ config BFQ_GROUP_IOSCHED
 	Enable hierarchical scheduling in BFQ, using the blkio
 	(cgroups-v1) or io (cgroups-v2) controller.
 
+config IOSCHED_ROW
+	tristate "ROW I/O scheduler"
+	default y
+	---help---
+	  The ROW I/O scheduler gives priority to READ requests over the
+	  WRITE requests when dispatching, without starving WRITE requests.
+	  Requests are kept in priority queues. Dispatching is done in a RR
+	  manner when the dispatch quantum for each queue is calculated
+	  according to queue priority.
+	  Most suitable for mobile devices.
+
 config BFQ_EXPORT_WEIGHTS
 	def_bool y if IOSCHED_BFQ && BROKEN
 
@@ -92,6 +103,10 @@ choice
 		bool "No-op"
 
 
+	config DEFAULT_ROW
+		bool "ROW" if IOSCHED_ROW=y
+
+
 	config DEFAULT_MAPLE
 		bool "Maple" if IOSCHED_MAPLE=y
 
@@ -103,6 +118,7 @@ config DEFAULT_IOSCHED
 	default "cfq" if DEFAULT_CFQ
 	default "bfq" if DEFAULT_BFQ
 	default "noop" if DEFAULT_NOOP
+	default "row" if DEFAULT_ROW
 	default "maple" if DEFAULT_MAPLE
 
 endmenu
